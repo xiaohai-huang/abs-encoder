@@ -20,11 +20,12 @@
 #include "main.h"
 #include "i2c.h"
 #include "spi.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>   /* for printf */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +46,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+uint8_t rx_byte = 0;   /* byte received via USART1 interrupt */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,14 +91,21 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_I2C1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  printf("=== USART1 test @115200 8N1 ===\r\n");
+  printf("System started, uptime %lu ms\r\n", HAL_GetTick());
 
+  /* Arm the interrupt receive for one byte */
+  HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    printf("Hello from STM32F103, uptime %lu ms\r\n", HAL_GetTick());
+    HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -145,6 +153,30 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief  Retarget printf to USART1.
+ *         Overrides the weak __io_putchar in syscalls.c,
+ *         so all printf output goes out on PA9 (USART1_TX).
+ */
+int __io_putchar(int ch)
+{
+  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+  return ch;
+}
+
+/**
+ * @brief  Called by HAL when one byte has been received via interrupt.
+ *         Echoes the byte back and re-arms the next receive.
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1)
+  {
+    printf("RX: 0x%02X '%c'\r\n", rx_byte, rx_byte);
+    HAL_UART_Receive_IT(&huart1, &rx_byte, 1);   /* re-arm for next byte */
+  }
+}
 
 /* USER CODE END 4 */
 
