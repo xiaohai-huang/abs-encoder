@@ -18,3 +18,6 @@ options:
     Debug:
         files: {}
         virtualPathFiles: {}
+    Release:
+        files: {}
+        virtualPathFiles: {}
