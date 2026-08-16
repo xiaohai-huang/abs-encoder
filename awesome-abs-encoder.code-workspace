@@ -6,6 +6,8 @@
     ],
     "settings": {
         "terminal.integrated.shellIntegration.enabled": false,
+        "EIDE.MCP.Server.Enable": true,
+        "EIDE.MCP.Server.Port": 8940,
         "clangd.arguments": [
             "--header-insertion=never"
         ],

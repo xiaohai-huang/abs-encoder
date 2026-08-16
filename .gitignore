@@ -13,3 +13,9 @@
 # eide template
 *.ept
 *.eide-template
+
+# CubeMX CMake byproduct (EIDE is the build system actually used;
+# CubeMX regenerates these on every code generation)
+/CMakeLists.txt
+/CMakePresets.json
+/cmake/
