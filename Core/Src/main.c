@@ -24,7 +24,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "hal.h"
+#include "mt6701.h"
+#include "multi_turn.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static mt_state_t g_mt;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,7 +93,8 @@ int main(void)
   MX_SPI1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
+  app_hal.init();
+  mt_init(&g_mt);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -101,6 +104,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    mt6701_sample_t sample;
+    if (mt6701_read_sample(&sample) == 0)
+    {
+      mt_update(&g_mt, sample.angle);
+    }
+    HAL_Delay(10);
+    /* USER CODE END 3 */
   }
   /* USER CODE END 3 */
 }
