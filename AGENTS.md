@@ -5,6 +5,15 @@ Firmware for a multi-turn absolute encoder on an STM32F103C8Tx (Cortex-M3, 72 MH
 ## Layout
 
 - `Core/` — application code (CubeMX-generated `main.c`, `spi.c`, `i2c.c`, `gpio.c`, IT/MSP files)
+- `App/` — hand-written application logic, split by hardware dependency:
+  - `hal.h` — the only header the logic includes; a `const app_hal_t` struct of function pointers (SPI byte exchange + CS, µs clock, delay, NVS) — grblHAL-style HAL
+  - `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation gated behind `MT6701_CRC6_ENABLED` — verify the polynomial against the datasheet before enabling)
+  - `multi_turn.c/.h` — multi-turn accumulation with NVS persistence
+  - `hal_stm32.c` — STM32 backend (SPI1, DWT µs clock, last flash page as NVS); the only firmware file that touches STM32 HAL
+- `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
+  - `hal_sim.c` — PC backend (QPC clock, `nvs.bin` file, SPI bridged to the fake chip)
+  - `mt6701_slave_sim.c/.h` — simulated MT6701 speaking the real 24-bit SSI frame, with fault/CRC injection controls
+  - `sim_main.c` — assert-based test harness (41 checks), `Makefile` (`make run`)
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
 - `STM32F103XX_FLASH.ld` — linker script (custom scatter file referenced by `.eide/eide.yml`)
@@ -24,9 +33,20 @@ Build outputs (`.elf`/`.hex`/`.map`) land in `build/<Config>/`; `build/` is giti
 
 Toolchain settings (from `.eide/eide.yml`): C11, `-Wall`, newlib-nano, `-lm`, function/data sections, `--gc-sections`; Debug = `-Og`, Release = `-Os`; output is ELF + HEX (no `.bin`).
 
+### PC test build (sim/)
+
+`App/` logic (mt6701 + multi_turn) is compiled against the sim backend and the fake MT6701 chip — same source, no firmware needed:
+
+```
+cd sim && make run        # MinGW gcc; WinLibs installed via winget lives in
+                          # %LOCALAPPDATA%\Microsoft\WinGet\Packages\...\mingw64\bin
+```
+
+`make run` deletes `sim/nvs.bin` first; the harness also removes it at startup, so stale state can't leak between runs. Exit code 0 = all checks pass. To exercise the (datasheet-verification pending) CRC-6 validation: `make run CFLAGS="-std=c11 -Wall -Wextra -g -O0 -I../App -DMT6701_CRC6_ENABLED=1"`.
+
 ## CubeMX regeneration rules
 
-Code under `Core/` is regenerated from the `.ioc`. Any manual code must live inside `/* USER CODE BEGIN x */ ... /* USER CODE END x */` blocks — anything outside them is overwritten on regeneration. New user source files, include paths, and defines go in `.eide/eide.yml` (and the CMake lists if you also keep that path working); `srcDirs` already covers `Core/` and `Drivers/`.
+Code under `Core/` is regenerated from the `.ioc`. Any manual code must live inside `/* USER CODE BEGIN x */ ... /* USER CODE END x */` blocks — anything outside them is overwritten on regeneration. New user source files, include paths, and defines go in `.eide/eide.yml` (and the CMake lists if you also keep that path working); `srcDirs` covers `Core/`, `Drivers/` and `App/`. Don't put hand code in `Core/` outside USER CODE blocks — put it in `App/`. Keep `sim/` out of the firmware build (it's not in `srcDirs`); files there are PC-only.
 
 ## Gotchas
 

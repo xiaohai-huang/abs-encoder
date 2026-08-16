@@ -10,6 +10,10 @@
 /obj
 /out
 
+# PC simulator build products
+/sim/build
+/sim/nvs.bin
+
 # eide template
 *.ept
 *.eide-template
