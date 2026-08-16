@@ -2,11 +2,13 @@
  * @file mt6701.h
  * @brief MT6701 (MagnTek) SSI protocol layer.
  *
- * The sensor speaks a 24-bit frame (3 bytes, MSB first, SPI mode 1):
+ * The sensor speaks a 24-bit frame (3 bytes, MSB first; the datasheet shows
+ * CLK idling high, but mode 1 -- CPOL=0, CPHA=1 -- is what the working
+ * reference drivers use and matches the CubeMX SPI1 config):
  *   bits 23..10  14-bit angle (0..16383 = 0..360 deg)
- *   bit  9       track loss
- *   bit  8       push-magnet (Z) state
- *   bits 7..6    field status (0 = normal)
+ *   bit  9       track loss (Mg[3])
+ *   bit  8       push-magnet (Mg[2])
+ *   bits 7..6    field status (Mg[1:0], 0 = normal)
  *   bits 5..0    CRC-6 (see mt6701_crc6_compute)
  *
  * Only this file and the simulated chip (sim/mt6701_slave_sim.c) know the
@@ -20,10 +22,10 @@
 
 #define MT6701_ANGLE_MAX 16383u
 
-/* The reference drivers ignore the CRC; enable only after verifying the
- * polynomial in mt6701.c against the MT6701 datasheet (SSI section). */
+/* CRC-6 (X^6+X+1) validation per datasheet Rev 1.8 SSI section;
+ * set to 0 to accept frames without the CRC check. */
 #ifndef MT6701_CRC6_ENABLED
-#define MT6701_CRC6_ENABLED 0
+#define MT6701_CRC6_ENABLED 1
 #endif
 
 typedef struct
@@ -44,9 +46,8 @@ int mt6701_read_frame(uint8_t frame[3]);
 
 /**
  * CRC-6 over the 18 data bits (angle + status), returned in the low 6 bits.
- * Polynomial X^6+X^5+X^3+X^2+X+1 (0x5B), init 0, MSB first.
- * NOTE: only used when MT6701_CRC6_ENABLED is defined; verify the
- * polynomial against the MT6701 datasheet (Rev 1.8, SSI section) first.
+ * Polynomial X^6+X+1 (0x43), initial value 0, no final XOR, MSB first --
+ * per datasheet Rev 1.8, SSI section.  Used when MT6701_CRC6_ENABLED is 1.
  */
 uint8_t mt6701_crc6_compute(const uint8_t frame[3]);
 

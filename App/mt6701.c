@@ -9,9 +9,10 @@
 #define MT6701_RETRIES        3u
 #define MT6701_RETRY_DELAY_US 10u
 
-/* CRC-6 polynomial: X^6+X^5+X^3+X^2+X+1 (see MT6701_CRC6_ENABLED in
- * mt6701.h — verify against the datasheet before enabling). */
-#define MT6701_CRC6_POLY 0x5Bu
+/* CRC-6 polynomial X^6+X+1, MSB first, over the 18 data bits
+ * (D[13:0] + Mg[3:0]) per datasheet Rev 1.8, SSI section (7.8.2).
+ * Initial value 0, no final XOR (not specified in the datasheet). */
+#define MT6701_CRC6_POLY 0x43u
 
 static uint8_t crc6_update(uint8_t crc, uint8_t byte, int bits)
 {

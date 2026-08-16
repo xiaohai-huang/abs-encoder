@@ -7,7 +7,7 @@ Firmware for a multi-turn absolute encoder on an STM32F103C8Tx (Cortex-M3, 72 MH
 - `Core/` — application code (CubeMX-generated `main.c`, `spi.c`, `i2c.c`, `gpio.c`, IT/MSP files)
 - `App/` — hand-written application logic, split by hardware dependency:
   - `hal.h` — the only header the logic includes; a `const app_hal_t` struct of function pointers (SPI byte exchange + CS, µs clock, delay, NVS) — grblHAL-style HAL
-  - `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation gated behind `MT6701_CRC6_ENABLED` — verify the polynomial against the datasheet before enabling)
+  - `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `MT6701_CRC6_ENABLED`)
   - `multi_turn.c/.h` — multi-turn accumulation with NVS persistence
   - `hal_stm32.c` — STM32 backend (SPI1, DWT µs clock, last flash page as NVS); the only firmware file that touches STM32 HAL
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
@@ -16,6 +16,7 @@ Firmware for a multi-turn absolute encoder on an STM32F103C8Tx (Cortex-M3, 72 MH
   - `sim_main.c` — assert-based test harness (41 checks), `Makefile` (`make run`)
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
+- `docs/MT6701.md` — MT6701 datasheet summary (Rev 1.8); the protocol layer is verified against it
 - `STM32F103XX_FLASH.ld` — linker script (custom scatter file referenced by `.eide/eide.yml`)
 - `startup_stm32f103xb.s` — startup assembly
 - `.eide/eide.yml` — Embedded IDE (EIDE) project: Debug and Release targets, toolchain and flash settings
@@ -42,7 +43,7 @@ cd sim && make run        # MinGW gcc; WinLibs installed via winget lives in
                           # %LOCALAPPDATA%\Microsoft\WinGet\Packages\...\mingw64\bin
 ```
 
-`make run` deletes `sim/nvs.bin` first; the harness also removes it at startup, so stale state can't leak between runs. Exit code 0 = all checks pass. To exercise the (datasheet-verification pending) CRC-6 validation: `make run CFLAGS="-std=c11 -Wall -Wextra -g -O0 -I../App -DMT6701_CRC6_ENABLED=1"`.
+`make run` deletes `sim/nvs.bin` first; the harness also removes it at startup, so stale state can't leak between runs. Exit code 0 = all checks pass. CRC-6 validation is on by default; to test the no-CRC path: `make run CFLAGS="-std=c11 -Wall -Wextra -g -O0 -I../App -DMT6701_CRC6_ENABLED=0"`.
 
 ## CubeMX regeneration rules
 
