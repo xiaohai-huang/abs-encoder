@@ -47,7 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static mt_state_t g_mt;
+static mt_state_t g_mt[MT6701_ENC_COUNT];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,7 +95,10 @@ int main(void)
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   app_hal.init();
-  mt_init(&g_mt);
+  for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
+  {
+    mt_init(&g_mt[enc], enc);
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -105,12 +108,16 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    mt6701_sample_t sample;
-    if (mt6701_read_sample(&sample) == 0)
+    for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
     {
-      mt_update(&g_mt, sample.angle);
+      mt6701_sample_t sample;
+      if (mt6701_read_sample(enc, &sample) == 0)
+      {
+        mt_update(&g_mt[enc], enc, sample.angle);
+      }
     }
     HAL_Delay(10);
+  }
   /* USER CODE END 3 */
 }
 

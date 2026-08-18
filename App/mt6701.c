@@ -35,26 +35,26 @@ uint8_t mt6701_crc6_compute(const uint8_t frame[3])
     return crc6_update(crc, (uint8_t)(frame[2] >> 6), 2);
 }
 
-int mt6701_read_frame(uint8_t frame[3])
+int mt6701_read_frame(uint8_t enc, uint8_t frame[3])
 {
     /* SSI is unidirectional: MOSI is don't-care while the chip shifts out. */
-    app_hal.spi_cs(true); /* assert (pull low): active-low chip select */
+    app_hal.spi_cs(enc, true); /* assert (pull low): active-low chip select */
     for (uint32_t i = 0; i < 3u; i++)
     {
-        frame[i] = app_hal.spi_transfer(0u);
+        frame[i] = app_hal.spi_transfer(enc, 0u);
     }
-    app_hal.spi_cs(false);
+    app_hal.spi_cs(enc, false);
     return 0;
 }
 
-int mt6701_read_sample(mt6701_sample_t *out)
+int mt6701_read_sample(uint8_t enc, mt6701_sample_t *out)
 {
     bool saw_fault = false;
 
     for (uint32_t i = 0; i < MT6701_RETRIES; i++)
     {
         uint8_t frame[3];
-        mt6701_read_frame(frame);
+        mt6701_read_frame(enc, frame);
 
 #if MT6701_CRC6_ENABLED
         if (mt6701_crc6_compute(frame) != (frame[2] & 0x3Fu))

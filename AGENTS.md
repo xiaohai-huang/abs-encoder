@@ -7,13 +7,13 @@ Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz
 - `Core/` — application code (CubeMX-generated `main.c`, `spi.c`, `i2c.c`, `gpio.c`, IT/MSP files)
 - `App/` — hand-written application logic, split by hardware dependency:
   - `hal.h` — the only header the logic includes; a `const app_hal_t` struct of function pointers (SPI byte exchange + CS, µs clock, delay, NVS) — grblHAL-style HAL
-  - `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `MT6701_CRC6_ENABLED`)
-  - `multi_turn.c/.h` — multi-turn accumulation with NVS persistence
-  - `hal_stm32.c` — STM32 backend (SPI1, DWT µs clock, last flash page as NVS); the only firmware file that touches STM32 HAL. NOTE: named after the pre-4-encoder layout — still single-encoder (SPI1) and out of sync with the regenerated `.ioc` pin names (CSN1..CSN4); adapting it to the 2-SPI/4-CSN layout is pending
+- `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `MT6701_CRC6_ENABLED`). All calls are indexed by encoder 0..3 — encoders 0/1 share SPI1 (CSN1/CSN2), 2/3 share SPI2 (CSN3/CSN4)
+- `multi_turn.c/.h` — multi-turn accumulation with NVS persistence (one slot per encoder)
+- `hal_stm32.c` — STM32 backend (SPI1 + SPI2, four encoders via CSN1..CSN4, DWT µs clock, last flash page as NVS with page-preserving writes); the only firmware file that touches STM32 HAL
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
   - `hal_sim.c` — PC backend (QPC clock, `nvs.bin` file, SPI bridged to the fake chip)
   - `mt6701_slave_sim.c/.h` — simulated MT6701 speaking the real 24-bit SSI frame, with fault/CRC injection controls
-  - `sim_main.c` — assert-based test harness (41 checks), `Makefile` (`make run`)
+  - `sim_main.c` — assert-based test harness (97 checks), `Makefile` (`make run`)
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
 - `docs/MT6701.md` — MT6701 datasheet summary (Rev 1.8); the protocol layer is verified against it
@@ -51,8 +51,7 @@ Code under `Core/` is regenerated from the `.ioc`. Any manual code must live ins
 
 ## Gotchas
 
-- CubeMX generates the four CSN pins (PA3/PA4/PA8/PA9) as push-pull outputs with initial state **LOW** — every encoder is selected (and all four drive the shared MISO lines) until software raises the CS lines after `MX_GPIO_Init`. Any CS handling must raise all four at startup.
-- `App/hal_stm32.c` still references the pre-regeneration pin name `MT6701_CSN_*` (now `CSN2_*`); the firmware does **not** build until it's updated for the 4-encoder layout.
+- CubeMX generates the four CSN pins (PA3/PA4/PA8/PA9) as push-pull outputs with initial state **LOW** (every encoder selected); `app_hal.init()` raises all four before the first frame. The `.ioc` now requests initial HIGH (`PinState`) so a future CubeMX regeneration starts deselected.
 - The CMake files are a CubeMX byproduct (gitignored and untracked; CubeMX recreates them on every code generation). If they're ever run: CMake presets write to `build/<preset>/` — `cmake --preset Debug` would clobber EIDE's `build/Debug` artifacts, so avoid it.
 - clangd (`.clangd`) reads `compile_commands.json` from `build/Debug`; if IntelliSense is stale, run a Debug build first.
 - `.clang-format` is Microsoft-based: 4 spaces, Linux brace style, `SortIncludes: false`, no column limit. Match it for new code.

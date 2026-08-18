@@ -1,8 +1,9 @@
 /**
  * @file hal_sim.c
- * @brief PC backend: SPI bridged to the simulated MT6701 chip, QPC clock,
- *        nvs.bin file as persistent storage.  Drop-in replacement for
- *        hal_stm32.c so the logic runs unmodified on the host.
+ * @brief PC backend: SPI bridged to the simulated MT6701 chips (one per
+ *        encoder index), QPC clock, nvs.bin file as persistent storage.
+ *        Drop-in replacement for hal_stm32.c so the logic runs unmodified
+ *        on the host.
  */
 #include "hal.h"
 
@@ -21,14 +22,14 @@ static void init(void)
     mt6701_slave_init();
 }
 
-static uint8_t spi_transfer(uint8_t tx)
+static uint8_t spi_transfer(uint8_t enc, uint8_t tx)
 {
-    return mt6701_slave_transfer(tx);
+    return mt6701_slave_transfer(enc, tx);
 }
 
-static void spi_cs(bool asserted)
+static void spi_cs(uint8_t enc, bool asserted)
 {
-    mt6701_slave_cs(asserted);
+    mt6701_slave_cs(enc, asserted);
 }
 
 static uint32_t now_us(void)
@@ -48,13 +49,14 @@ static void delay_us(uint32_t us)
 
 static bool nvs_read(uint32_t addr, void *buf, uint32_t len)
 {
-    if (addr != 0u)
-    {
-        return false;
-    }
     FILE *f = fopen(SIM_NVS_FILE, "rb");
     if (f == NULL)
     {
+        return false;
+    }
+    if (fseek(f, (long)addr, SEEK_SET) != 0)
+    {
+        fclose(f);
         return false;
     }
     size_t got = fread(buf, 1, len, f);
@@ -64,13 +66,18 @@ static bool nvs_read(uint32_t addr, void *buf, uint32_t len)
 
 static bool nvs_write(uint32_t addr, const void *buf, uint32_t len)
 {
-    if (addr != 0u)
+    FILE *f = fopen(SIM_NVS_FILE, "r+b");
+    if (f == NULL)
+    {
+        f = fopen(SIM_NVS_FILE, "wb"); /* create on first use */
+    }
+    if (f == NULL)
     {
         return false;
     }
-    FILE *f = fopen(SIM_NVS_FILE, "wb");
-    if (f == NULL)
+    if (fseek(f, (long)addr, SEEK_SET) != 0)
     {
+        fclose(f);
         return false;
     }
     size_t put = fwrite(buf, 1, len, f);

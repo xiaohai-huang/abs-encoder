@@ -8,7 +8,6 @@
 #include "mt6701.h"
 
 #define MT_MAGIC    0x4D543031u /* "MT01" */
-#define MT_NVS_ADDR 0u
 
 typedef struct
 {
@@ -33,7 +32,7 @@ static uint16_t crc16_ccitt(const uint8_t *data, uint32_t len)
     return crc;
 }
 
-void mt_init(mt_state_t *st)
+void mt_init(mt_state_t *st, uint8_t enc)
 {
     st->turns = 0;
     st->angle = 0;
@@ -41,7 +40,8 @@ void mt_init(mt_state_t *st)
     st->saved_turns = 0;
 
     mt_record_t rec;
-    if (app_hal.nvs_read(MT_NVS_ADDR, &rec, sizeof(rec)) &&
+    uint32_t addr = (uint32_t)enc * sizeof(rec);
+    if (app_hal.nvs_read(addr, &rec, sizeof(rec)) &&
         rec.magic == MT_MAGIC &&
         rec.crc == crc16_ccitt((const uint8_t *)&rec, sizeof(rec) - sizeof(rec.crc)))
     {
@@ -52,7 +52,7 @@ void mt_init(mt_state_t *st)
     }
 }
 
-int mt_update(mt_state_t *st, uint16_t angle)
+int mt_update(mt_state_t *st, uint8_t enc, uint16_t angle)
 {
     int32_t delta = (int32_t)angle - (int32_t)st->angle;
 
@@ -70,7 +70,7 @@ int mt_update(mt_state_t *st, uint16_t angle)
     {
         mt_record_t rec = {MT_MAGIC, st->turns, st->angle, 0u};
         rec.crc = crc16_ccitt((const uint8_t *)&rec, sizeof(rec) - sizeof(rec.crc));
-        if (!app_hal.nvs_write(MT_NVS_ADDR, &rec, sizeof(rec)))
+        if (!app_hal.nvs_write((uint32_t)enc * sizeof(rec), &rec, sizeof(rec)))
         {
             return -1;
         }
