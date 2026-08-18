@@ -18,12 +18,12 @@ static void init(void)
     mt6701_slave_init();
 }
 
-static uint8_t spi_transfer(uint8_t enc, uint8_t tx)
+static uint8_t spi_transfer(encoder_role_t enc, uint8_t tx)
 {
     return mt6701_slave_transfer(enc, tx);
 }
 
-static void spi_cs(uint8_t enc, bool asserted)
+static void spi_cs(encoder_role_t enc, bool asserted)
 {
     mt6701_slave_cs(enc, asserted);
 }

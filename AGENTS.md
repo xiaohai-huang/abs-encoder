@@ -7,8 +7,10 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
 - `Core/` — application code (CubeMX-generated `main.c`, `spi.c`, `i2c.c`, `gpio.c`, IT/MSP files)
 - `App/` — hand-written application logic, split by hardware dependency:
   - `hal.h` — the only header the logic includes; a `const app_hal_t` struct of function pointers (SPI byte exchange + CS, µs clock, delay) — grblHAL-style HAL
-- `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `MT6701_CRC6_ENABLED`). All calls are indexed by encoder 0..3 — encoders 0/1 share SPI1 (CSN1/CSN2), 2/3 share SPI2 (CSN3/CSN4)
-- `hal_stm32.c` — STM32 backend (SPI1 + SPI2, four encoders via CSN1..CSN4, DWT µs clock); the only firmware file that touches STM32 HAL
+- `mt6701.c/.h` — MT6701 SSI protocol layer (24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `MT6701_CRC6_ENABLED`). All calls are indexed by `encoder_role_t` — `ENC_SUN` is the input shaft, `ENC_GEAR_1..3` the driven gears (wiring: ENC_GEAR_1/2 on SPI1 via CSN1/CSN2, ENC_SUN/ENC_GEAR_3 on SPI2 via CSN4/CSN3 — the `s_enc` table in `hal_stm32.c`)
+- `gear_config.h` — compile-time mechanical config: input + driven tooth counts, turn-field width, slew limit; changing gears = edit this header, rebuild, reflash. Also defines the `encoder_role_t` enum (`ENC_SUN`, `ENC_GEAR_1..3`) that names every encoder everywhere. The CSN/bus wiring per role is the role-keyed `s_enc` table in `hal_stm32.c`
+- `gear_decode.c/.h` — absolute multi-turn decode from coprime gear phases: per-sample CRT over the three gear residues, slew-guarded (jumps > `GEAR_MAX_TURNS_DELTA` rejected as misreads, last position held). No storage; the only state is the last accepted turn count
+- `hal_stm32.c` — STM32 backend (SPI1 + SPI2, role-keyed `s_enc` wiring table binding each `encoder_role_t` to its CSN pin and SPI bus, DWT µs clock); the only firmware file that touches STM32 HAL
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
   - `hal_sim.c` — PC backend (QPC clock, SPI bridged to the fake chip)
   - `mt6701_slave_sim.c/.h` — simulated MT6701 speaking the real 24-bit SSI frame, with fault/CRC injection controls
@@ -36,7 +38,7 @@ Toolchain settings (from `.eide/eide.yml`): C11, `-Wall`, newlib-nano, `-lm`, fu
 
 ### PC test build (sim/)
 
-`App/` logic (mt6701) is compiled against the sim backend and the fake MT6701 chip — same source, no firmware needed:
+`App/` logic (mt6701 + gear_decode) is compiled against the sim backend and the fake MT6701 chip — same source, no firmware needed:
 
 ```
 cd sim && make run        # MinGW gcc; WinLibs installed via winget lives in

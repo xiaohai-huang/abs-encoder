@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "hal.h"
 #include "mt6701.h"
+#include "gear_decode.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +47,11 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* last valid angle per encoder role (kept across failed reads) and the
+ * decoded multi-turn position; g_pos is the product output once a
+ * consumer exists */
+static gear_angles_t g_angles;
+static gear_pos_t g_pos;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,6 +99,10 @@ int main(void)
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   app_hal.init();
+  if (!gear_decode_init())
+  {
+    Error_Handler(); /* gear config invalid, see App/gear_config.h */
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,11 +112,24 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
+    mt6701_sample_t sample;
+    if (mt6701_read_sample(ENC_SUN, &sample) == 0)
     {
-      mt6701_sample_t sample;
-      mt6701_read_sample(enc, &sample);
+      g_angles.sun = sample.angle;
     }
+    if (mt6701_read_sample(ENC_GEAR_1, &sample) == 0)
+    {
+      g_angles.gear1 = sample.angle;
+    }
+    if (mt6701_read_sample(ENC_GEAR_2, &sample) == 0)
+    {
+      g_angles.gear2 = sample.angle;
+    }
+    if (mt6701_read_sample(ENC_GEAR_3, &sample) == 0)
+    {
+      g_angles.gear3 = sample.angle;
+    }
+    g_pos = gear_decode(&g_angles);
     HAL_Delay(10);
   }
   /* USER CODE END 3 */
