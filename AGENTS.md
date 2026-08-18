@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz from 8 MHz HSE × PLL9). Active peripherals: SPI1, SPI2, I2C1, GPIO — four MT6701 absolute encoders, two per SPI bus (CSN1..CSN4 = PA3/PA4/PA9/PA8).
+Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz from 8 MHz HSE × PLL9). Active peripherals: SPI1, SPI2, I2C1, GPIO — four MT6701 absolute encoders (User Labels CSN1..CSN4), two per SPI bus.
 
 ## Layout
 
@@ -51,7 +51,7 @@ Code under `Core/` is regenerated from the `.ioc`. Any manual code must live ins
 
 ## Gotchas
 
-- The four CSN pins (PA3/PA4/PA8/PA9) are configured as push-pull outputs initialized **HIGH** (deselected) via `PinState` in the `.ioc` (high speed); `app_hal.init()` also raises them defensively before the first frame.
+- The four CSN pins (User Labels CSN1..CSN4) are configured as push-pull outputs initialized **HIGH** (deselected) via `PinState` in the `.ioc` (high speed); `app_hal.init()` also raises them defensively before the first frame. Keep referencing them by label — CubeMX regenerates `CSNx_Pin`/`CSNx_GPIO_Port` from the labels.
 - The CMake files are a CubeMX byproduct (gitignored and untracked; CubeMX recreates them on every code generation). If they're ever run: CMake presets write to `build/<preset>/` — `cmake --preset Debug` would clobber EIDE's `build/Debug` artifacts, so avoid it.
 - clangd (`.clangd`) reads `compile_commands.json` from `build/Debug`; if IntelliSense is stale, run a Debug build first.
 - `.clang-format` is Microsoft-based: 4 spaces, Linux brace style, `SortIncludes: false`, no column limit. Match it for new code.

@@ -16,8 +16,8 @@
 #define NVS_FLASH_ADDR 0x0800FC00u /* last 1 KiB page of the 64 KiB flash */
 #define NVS_PAGE_SIZE  1024u
 
-/* encoders 0,1 on SPI1 (CSN1 = PA3, CSN2 = PA4); 2,3 on SPI2
- * (CSN3 = PA9, CSN4 = PA8) */
+/* encoders 0,1 on SPI1 (CSN1, CSN2); 2,3 on SPI2 (CSN3, CSN4).
+ * Pin values come from the CubeMX User Labels (main.h). */
 static const struct
 {
     GPIO_TypeDef *port;
