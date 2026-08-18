@@ -26,7 +26,6 @@
 /* USER CODE BEGIN Includes */
 #include "hal.h"
 #include "mt6701.h"
-#include "multi_turn.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +46,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static mt_state_t g_mt[MT6701_ENC_COUNT];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,10 +94,6 @@ int main(void)
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   app_hal.init();
-  for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
-  {
-    mt_init(&g_mt[enc], enc);
-  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -111,10 +106,7 @@ int main(void)
     for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
     {
       mt6701_sample_t sample;
-      if (mt6701_read_sample(enc, &sample) == 0)
-      {
-        mt_update(&g_mt[enc], enc, sample.angle);
-      }
+      mt6701_read_sample(enc, &sample);
     }
     HAL_Delay(10);
   }

@@ -2,7 +2,7 @@
  * @file hal.h
  * @brief Hardware abstraction interface (grblHAL-style).
  *
- * All application logic (mt6701.c, multi_turn.c) depends only on this
+ * All application logic (mt6701.c) depends only on this
  * header and never touches MCU registers or STM32 HAL headers.  The SPI
  * byte exchange and chip-select calls are indexed by encoder
  * (0..MT6701_ENC_COUNT-1); the platform maps each encoder to a bus and a
@@ -32,10 +32,6 @@ typedef struct
 
     /** Busy-wait delay. */
     void (*delay_us)(uint32_t us);
-
-    /** Non-volatile storage with byte granularity; one slot per encoder. */
-    bool (*nvs_read)(uint32_t addr, void *buf, uint32_t len);
-    bool (*nvs_write)(uint32_t addr, const void *buf, uint32_t len);
 } app_hal_t;
 
 extern const app_hal_t app_hal;
