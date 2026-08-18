@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz from 8 MHz HSE × PLL9). Active peripherals: SPI1, SPI2, I2C1, GPIO — four MT6701 absolute encoders, two per SPI bus (CSN1..CSN4 = PA3/PA4/PA9/PA8). UART1 was used for an early printf demo, then disabled in CubeMX (commit 371cefe) — don't re-enable it without being asked.
+Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz from 8 MHz HSE × PLL9). Active peripherals: SPI1, SPI2, I2C1, GPIO — four MT6701 absolute encoders, two per SPI bus (CSN1..CSN4 = PA3/PA4/PA9/PA8).
 
 ## Layout
 
@@ -13,7 +13,7 @@ Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
   - `hal_sim.c` — PC backend (QPC clock, `nvs.bin` file, SPI bridged to the fake chip)
   - `mt6701_slave_sim.c/.h` — simulated MT6701 speaking the real 24-bit SSI frame, with fault/CRC injection controls
-  - `sim_main.c` — assert-based test harness (97 checks), `Makefile` (`make run`)
+  - `sim_main.c` — assert-based test harness, `Makefile` (`make run`)
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
 - `docs/MT6701.md` — MT6701 datasheet summary (Rev 1.8); the protocol layer is verified against it
@@ -27,7 +27,7 @@ Firmware for multi-turn absolute encoders on an STM32F103C8Tx (Cortex-M3, 72 MHz
 Builds go through the EIDE extension — from the VS Code UI (`Ctrl+Shift+B`, tasks in `.vscode/tasks.json`) or, for agents, through EIDE's MCP server:
 
 - The MCP server runs from the extension when `EIDE.MCP.Server.Enable` is on (port 8940; both keys are set in `awesome-abs-encoder.code-workspace` → `settings`). It only lives while VS Code is open with the project — it auto-exits ~3 s after the extension host disconnects.
-- Register it in the agent client as HTTP at `http://localhost:8940/mcp` (ZCode: `C:\Users\86791\.zcode\cli\config.json` — the server entry needs `"noProxy": "localhost,127.0.0.1"` to bypass the system proxy). Tools take the project `uid` from `.eide/eide.yml` (`miscInfo.uid`).
+- Register it in the agent client as HTTP at `http://localhost:8940/mcp` (the server entry needs `"noProxy": "localhost,127.0.0.1"` to bypass the system proxy). Tools take the project `uid` from `.eide/eide.yml` (`miscInfo.uid`).
 - Prefer MCP tools over hand-editing `.eide/eide.yml`; if you do edit it manually, call `eide_reload` first so the extension regenerates `builder.params` (the snapshot `unify_builder` consumes — CLI builds with stale params silently ignore config changes).
 
 Build outputs (`.elf`/`.hex`/`.map`) land in `build/<Config>/`; `build/` is gitignored. Flashing is via STLink SWD (cortex-debug) from within VS Code — there is no CLI flash script.
@@ -51,7 +51,7 @@ Code under `Core/` is regenerated from the `.ioc`. Any manual code must live ins
 
 ## Gotchas
 
-- CubeMX generates the four CSN pins (PA3/PA4/PA8/PA9) as push-pull outputs with initial state **LOW** (every encoder selected); `app_hal.init()` raises all four before the first frame. The `.ioc` now requests initial HIGH (`PinState`) so a future CubeMX regeneration starts deselected.
+- The four CSN pins (PA3/PA4/PA8/PA9) are configured as push-pull outputs initialized **HIGH** (deselected) via `PinState` in the `.ioc` (high speed); `app_hal.init()` also raises them defensively before the first frame.
 - The CMake files are a CubeMX byproduct (gitignored and untracked; CubeMX recreates them on every code generation). If they're ever run: CMake presets write to `build/<preset>/` — `cmake --preset Debug` would clobber EIDE's `build/Debug` artifacts, so avoid it.
 - clangd (`.clangd`) reads `compile_commands.json` from `build/Debug`; if IntelliSense is stale, run a Debug build first.
 - `.clang-format` is Microsoft-based: 4 spaces, Linux brace style, `SortIncludes: false`, no column limit. Match it for new code.
