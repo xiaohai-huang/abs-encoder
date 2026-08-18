@@ -92,6 +92,7 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_I2C1_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   app_hal.init();
   mt_init(&g_mt);
@@ -110,8 +111,6 @@ int main(void)
       mt_update(&g_mt, sample.angle);
     }
     HAL_Delay(10);
-    /* USER CODE END 3 */
-  }
   /* USER CODE END 3 */
 }
 
