@@ -31,9 +31,8 @@ static const struct
 
 static void init(void)
 {
-    /* CubeMX generates the CSN pins asserted (low); deselect every encoder
-     * before the first SPI frame (the .ioc asks for initial HIGH, but this
-     * must hold regardless of regeneration). */
+    /* The .ioc asks for the CSN pins to come up HIGH (deselected); enforce it
+     * here so a future regeneration can't leave every encoder selected. */
     for (uint8_t enc = 0; enc < MT6701_ENC_COUNT; enc++)
     {
         HAL_GPIO_WritePin(s_csn[enc].port, s_csn[enc].pin, GPIO_PIN_SET);
