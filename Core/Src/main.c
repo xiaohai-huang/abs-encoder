@@ -103,6 +103,10 @@ int main(void)
   {
     Error_Handler(); /* gear config invalid, see App/gear_config.h */
   }
+  /* 1 kHz sample clock: the loop waits until this target, then re-anchors
+   * it one period ahead, so sample instants stay fixed-frequency and can
+   * never drift with processing time */
+  uint32_t next_sample_us = app_hal.now_us() + GEAR_SAMPLE_PERIOD_US;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -112,6 +116,16 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* wait for the next fixed sample instant; signed comparison keeps it
+     * correct across the 32-bit µs counter wrap-around, and a slow
+     * iteration just falls through once and re-syncs the phase */
+    uint32_t now = app_hal.now_us();
+    while ((int32_t)(now - next_sample_us) < 0)
+    {
+      now = app_hal.now_us();
+    }
+    next_sample_us += GEAR_SAMPLE_PERIOD_US;
+
     mt6701_sample_t sample;
     if (mt6701_read_sample(ENC_SUN, &sample) == 0)
     {
@@ -129,9 +143,8 @@ int main(void)
     {
       g_angles.gear3 = sample.angle;
     }
-    g_pos = gear_decode(&g_angles);
-    HAL_Delay(10);
-  }
+g_pos = gear_decode(&g_angles);
+    }
   /* USER CODE END 3 */
 }
 
