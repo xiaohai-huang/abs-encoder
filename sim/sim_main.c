@@ -7,11 +7,13 @@
  * Exit code 0 = all checks passed; run from sim/ (make run).
  */
 #include <stdio.h>
+#include <string.h>
 
 #include "hal.h"
 #include "mt6701.h"
 #include "mt6701_slave_sim.h"
 #include "gear_decode.h"
+#include "i2c_pos.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -283,6 +285,76 @@ static void test_gear_decode_read_path(void)
     CHECK(p.turns == 4000u);
 }
 
+static void test_i2c_pos(void)
+{
+    printf("i2c position register map (App/i2c_pos.c)\n");
+    i2c_pos_init();
+    uint8_t b[I2C_POS_REG_COUNT];
+    gear_pos_t p;
+
+    /* origin sample: all bytes zero except status.valid */
+    p.valid = true;
+    p.turns = 0u;
+    p.angle = 0u;
+    i2c_pos_update(&p);
+    i2c_pos_select(0u);
+    CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
+    CHECK(memcmp(b, (uint8_t[]){0u, 0u, 0u, 0u, I2C_POS_STATUS_VALID},
+                 sizeof(b)) == 0);
+
+    /* extremes encode little-endian: 7428 = 0x1D04, 16383 = 0x3FFF */
+    p.valid = true;
+    p.turns = GEAR_TURN_RANGE - 1u;
+    p.angle = MT6701_ANGLE_MAX;
+    i2c_pos_update(&p);
+    i2c_pos_select(0u);
+    CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
+    CHECK(memcmp(b, (uint8_t[]){0x04u, 0x1Du, 0xFFu, 0x3Fu, I2C_POS_STATUS_VALID},
+                 sizeof(b)) == 0);
+
+    /* a slew-guard rejection keeps the position bytes but clears status */
+    p.valid = false;
+    p.turns = 1234u;
+    p.angle = 0x1234u;
+    i2c_pos_update(&p);
+    i2c_pos_select(0u);
+    CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
+    CHECK(b[0] == 0xD2u); /* 1234 & 0xFF */
+    CHECK(b[1] == 0x04u); /* 1234 >> 8 */
+    CHECK(b[2] == 0x34u);
+    CHECK(b[3] == 0x12u);
+    CHECK(b[4] == 0u); /* status: not valid */
+    CHECK(memcmp(b, (uint8_t[]){0xD2u, 0x04u, 0x34u, 0x12u, 0x00u},
+                 sizeof(b)) == 0);
+
+    /* auto-increment across separate read calls, one byte at a time */
+    i2c_pos_select(2u);
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x34u);
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x12u);
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* status */
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* past the map */
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* stays zero */
+
+    /* a pointer past the map reads zeros too */
+    i2c_pos_select(0xFFu);
+    CHECK(i2c_pos_read(b, 4u) == 4u);
+    CHECK(memcmp(b, (uint8_t[]){0u, 0u, 0u, 0u}, 4u) == 0);
+
+    /* refreshing the snapshot does not disturb the cursor */
+    i2c_pos_select(3u);
+    p.valid = true;
+    p.turns = 5u;
+    p.angle = 9u;
+    i2c_pos_update(&p);
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x00u);  /* angle hi of 9 */
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == I2C_POS_STATUS_VALID);
+
+    /* window through the middle of the map (pointer + partial read) */
+    i2c_pos_select(1u);
+    CHECK(i2c_pos_read(b, 2u) == 2u);
+    CHECK(memcmp(b, (uint8_t[]){0x00u, 0x09u}, 2u) == 0); /* turns hi, angle lo */
+}
+
 int main(void)
 {
     app_hal.init();
@@ -295,6 +367,7 @@ int main(void)
     test_gear_decode();
     test_gear_vernier_bijection();
     test_gear_decode_read_path();
+    test_i2c_pos();
 
     printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures != 0 ? 1 : 0;

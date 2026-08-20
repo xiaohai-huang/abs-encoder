@@ -6,11 +6,11 @@ CC    = gcc   # override on the command line if your gcc lives elsewhere
 CFLAGS = -std=c11 -Wall -Wextra -g -O0 -I../App
 
 SRCS = sim_main.c hal_sim.c mt6701_slave_sim.c \
-       ../App/mt6701.c ../App/gear_decode.c
+       ../App/mt6701.c ../App/gear_decode.c ../App/i2c_pos.c
 
 BIN = build/enc-sim
 
-$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h mt6701_slave_sim.h
+$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h mt6701_slave_sim.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(SRCS) -o $@
 
