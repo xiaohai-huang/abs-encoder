@@ -57,7 +57,7 @@
 /* External variables --------------------------------------------------------*/
 extern TIM_HandleTypeDef htim2;
 /* USER CODE BEGIN EV */
-
+extern I2C_HandleTypeDef hi2c1;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -213,5 +213,20 @@ void TIM2_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* I2C1 slave transport for the position register map (App/i2c_pos.h,
+ * docs/i2c.md).  Hand-written here because the .ioc never had I2C1
+ * interrupts enabled: hal_stm32.c turns the NVIC lines on at init.  If you
+ * ever enable I2C1_EV_IRQn/I2C1_ER_IRQn in CubeMX, delete these two
+ * handlers and use the ones it generates. */
+void I2C1_EV_IRQHandler(void)
+{
+  HAL_I2C_EV_IRQHandler(&hi2c1);
+}
+
+void I2C1_ER_IRQHandler(void)
+{
+  HAL_I2C_ER_IRQHandler(&hi2c1);
+}
 
 /* USER CODE END 1 */

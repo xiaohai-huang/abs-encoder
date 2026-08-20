@@ -28,6 +28,7 @@
 #include "hal.h"
 #include "mt6701.h"
 #include "gear_decode.h"
+#include "i2c_pos.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,8 +50,8 @@
 
 /* USER CODE BEGIN PV */
 /* last valid angle per encoder role (kept across failed reads) and the
- * decoded multi-turn position; g_pos is the product output once a
- * consumer exists */
+ * decoded multi-turn position; g_pos feeds the I2C slave port (i2c_pos.c),
+ * which publishes it to any host on the bus (docs/i2c.md) */
 static gear_angles_t g_angles;
 static gear_pos_t g_pos;
 /* set by the TIM2 update interrupt: the main loop takes one sample per tick */
@@ -146,6 +147,7 @@ int main(void)
       g_angles.gear3 = sample.angle;
     }
     g_pos = gear_decode(&g_angles);
+    i2c_pos_update(&g_pos); /* publish to the I2C slave register map */
     }
   /* USER CODE END 3 */
 }
