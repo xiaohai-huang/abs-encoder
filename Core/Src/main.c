@@ -148,7 +148,7 @@ int main(void)
     }
     g_pos = gear_decode(&g_angles);
     i2c_pos_update(&g_pos); /* publish to the I2C slave register map */
-    }
+  }
   /* USER CODE END 3 */
 }
 
