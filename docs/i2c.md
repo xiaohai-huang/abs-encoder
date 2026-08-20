@@ -21,16 +21,25 @@ when addressed, like any encoder IC (AS5600-style).
 
 All registers are read-only, little-endian on the wire:
 
-| reg  | name      | meaning                                                        |
-|------|-----------|----------------------------------------------------------------|
-| 0x00 | turns lo  | whole input-shaft turns, LSB                                  |
-| 0x01 | turns hi  | whole input-shaft turns, MSB (0 .. 7428 = `GEAR_TURN_RANGE-1`) |
-| 0x02 | angle lo  | fine angle within the turn, LSB (14-bit, 0 .. 16383)           |
-| 0x03 | angle hi  | fine angle within the turn, MSB                                |
-| 0x04 | status    | bit0 = 1: sample passed the slew guard (`valid`)               |
+| reg        | name   | meaning                                                        |
+|------------|--------|----------------------------------------------------------------|
+| 0x00..0x03 | pos    | absolute position count, uint32 LE, 0 .. 121,716,735           |
+| 0x04       | status | bit0 = 1: sample passed the slew guard (`valid`)               |
 
-Position in counts: `turns * 16384 + angle`.  In degrees:
-`counts * 360 / 16384`.
+The position count is the whole input-shaft travel in fine-angle steps:
+`counts = turns * 16384 + angle`, where `turns` (0 .. 7428) comes from the
+gear phases and `angle` (0 .. 16383) is the 14-bit fine angle within the
+turn.  The combined value is a 27-bit integer that counts continuously
+across the turn boundary — it never jumps at the seam.
+
+Conversions, on the host:
+
+```
+counts  = turns * 16384 + angle
+turns   = counts / 16384
+angle   = counts % 16384
+degrees = counts * 360 / 16384
+```
 
 ## Transactions (EEPROM-style)
 
@@ -44,7 +53,7 @@ Read the whole snapshot with a combined transaction:
 ```
 write 0xA0, byte 0x00,    <- register pointer
 (repeated start)
-read  0xA1, 5 bytes       <- turns lo/hi, angle lo/hi, status
+read  0xA1, 5 bytes       <- position count (4 bytes LE) + status
 ```
 
 Common patterns: 4 bytes = position only; 5 bytes = position + status.
@@ -56,12 +65,25 @@ harmless — the slave re-arms at the end of the transaction.
 
 - Position bytes are always the latest sample.  When the slew guard rejects
   a sample (misread gear, see docs/architecture.md), `status.valid` clears
-  while the position bytes keep the last accepted turns — a host can decide
+  while the position bytes keep the last accepted count — a host can decide
   whether to keep tracking on a stale reading.
 - Before the first sample the map reads all zeros and `status.valid = 0`.
 - The address, once configured, survives CubeMX regeneration: the generated
   `i2c.c` keeps `OwnAddress1 = 0`; `hal_stm32.c` applies `I2C_POS_ADDR` at
   runtime during `app_hal.init()`.
+
+### Valve position example
+
+To log how far a valve has opened:
+
+1. Record `closed` and `open` — the counts read when the valve is fully
+   closed and fully open (single 4-byte read each).
+2. Percent open: `(counts - closed) * 100 / (open - closed)`, clamped to
+   0..100.
+
+Only the two reference readings are ever needed: the count itself is
+absolute and needs no calibration table, and it never resets on power
+loss.
 
 ## Raising the speed to 400 kHz
 

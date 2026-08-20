@@ -2,15 +2,16 @@
  * @file i2c_pos.c
  * @brief I2C slave register map for the absolute position (see i2c_pos.h).
  *
- * The exported snapshot lives in one 32-bit word (turns | angle, both
- * little-endian on the wire) plus one status byte.  The main loop writes it
- * with a single aligned store and the transport copies it with a single
- * aligned load at address-match time, so a host read can never observe a
- * torn position even though the sample updates at 1 kHz.
+ * The exported snapshot lives in one 32-bit word: the absolute position
+ * count (turns * I2C_POS_COUNTS_PER_TURN + angle, little-endian on the
+ * wire) plus one status byte.  The main loop writes it with a single
+ * aligned store and the transport copies it with a single aligned load at
+ * address-match time, so a host read can never observe a torn position
+ * even though the sample updates at 1 kHz.
  */
 #include "i2c_pos.h"
 
-static uint32_t s_frame; /* regs 0x00..0x03: turns | (angle << 16) */
+static uint32_t s_frame; /* regs 0x00..0x03: position count */
 static uint8_t s_status; /* reg 0x04 */
 static uint8_t s_cursor; /* register pointer (host-writable), 0..REG_COUNT */
 
@@ -23,7 +24,9 @@ void i2c_pos_init(void)
 
 void i2c_pos_update(const gear_pos_t *p)
 {
-    s_frame = (uint32_t)p->turns | ((uint32_t)p->angle << 16u);
+    /* one aligned 32-bit store: a concurrent reader sees either the old or
+       the new count, never a torn mix of turn and angle bytes */
+    s_frame = (uint32_t)p->turns * I2C_POS_COUNTS_PER_TURN + p->angle;
     s_status = p->valid ? I2C_POS_STATUS_VALID : 0u;
 }
 

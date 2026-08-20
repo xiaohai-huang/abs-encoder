@@ -22,16 +22,20 @@
  *  in i2c.c is never used. */
 #define I2C_POS_ADDR 0x50u
 
-/* Register map (all read-only, little-endian on the wire):
- *   0x00..0x01  turns, uint16 LE, 0 .. GEAR_TURN_RANGE-1
- *   0x02..0x03  fine angle, uint16 LE, 0 .. MT6701_ANGLE_MAX
+/* Register map (read-only, little-endian on the wire):
+ *   0x00..0x03  absolute position count, uint32 LE, 0 ..
+ *               121,716,735  (turns * I2C_POS_COUNTS_PER_TURN + angle;
+ *               the turn field 0..7428 is 13 bits and the 14-bit fine
+ *               angle makes the combined value a 27-bit integer, so it
+ *               fits one uint32 and counts continuously across the
+ *               turn boundary)
  *   0x04        status: bit0 = 1 when the sample passed the slew guard */
-#define I2C_POS_REG_TURNS_LO 0x00u
-#define I2C_POS_REG_TURNS_HI 0x01u
-#define I2C_POS_REG_ANGLE_LO 0x02u
-#define I2C_POS_REG_ANGLE_HI 0x03u
 #define I2C_POS_REG_STATUS   0x04u
 #define I2C_POS_REG_COUNT    5u
+
+/** Fine-angle steps per whole turn (MT6701_ANGLE_MAX + 1).  The combined
+ *  count the map exports is turns * this + angle. */
+#define I2C_POS_COUNTS_PER_TURN (MT6701_ANGLE_MAX + 1u)
 
 #define I2C_POS_STATUS_VALID 0x01u /* p->valid: slew guard accepted */
 

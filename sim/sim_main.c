@@ -302,35 +302,43 @@ static void test_i2c_pos(void)
     CHECK(memcmp(b, (uint8_t[]){0u, 0u, 0u, 0u, I2C_POS_STATUS_VALID},
                  sizeof(b)) == 0);
 
-    /* extremes encode little-endian: 7428 = 0x1D04, 16383 = 0x3FFF */
+    /* one whole turn is exactly COUNTS_PER_TURN (0x4000), not trailing
+     * zeroes of a separate turn field */
+    p.valid = true;
+    p.turns = 1u;
+    p.angle = 0u;
+    i2c_pos_update(&p);
+    i2c_pos_select(0u);
+    CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
+    CHECK(memcmp(b, (uint8_t[]){0x00u, 0x40u, 0x00u, 0x00u, I2C_POS_STATUS_VALID},
+                 sizeof(b)) == 0);
+
+    /* the extreme position is one continuous 27-bit count:
+     * 7428 * 16384 + 16383 = 121,716,735 = 0x07413FFF */
     p.valid = true;
     p.turns = GEAR_TURN_RANGE - 1u;
     p.angle = MT6701_ANGLE_MAX;
     i2c_pos_update(&p);
     i2c_pos_select(0u);
     CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
-    CHECK(memcmp(b, (uint8_t[]){0x04u, 0x1Du, 0xFFu, 0x3Fu, I2C_POS_STATUS_VALID},
+    CHECK(memcmp(b, (uint8_t[]){0xFFu, 0x3Fu, 0x41u, 0x07u, I2C_POS_STATUS_VALID},
                  sizeof(b)) == 0);
 
-    /* a slew-guard rejection keeps the position bytes but clears status */
+    /* a slew-guard rejection keeps the position bytes but clears status;
+     * 1234 turns + 0x1234 angle = 20,222,516 = 0x01349234 */
     p.valid = false;
     p.turns = 1234u;
     p.angle = 0x1234u;
     i2c_pos_update(&p);
     i2c_pos_select(0u);
     CHECK(i2c_pos_read(b, sizeof(b)) == sizeof(b));
-    CHECK(b[0] == 0xD2u); /* 1234 & 0xFF */
-    CHECK(b[1] == 0x04u); /* 1234 >> 8 */
-    CHECK(b[2] == 0x34u);
-    CHECK(b[3] == 0x12u);
-    CHECK(b[4] == 0u); /* status: not valid */
-    CHECK(memcmp(b, (uint8_t[]){0xD2u, 0x04u, 0x34u, 0x12u, 0x00u},
+    CHECK(memcmp(b, (uint8_t[]){0x34u, 0x92u, 0x34u, 0x01u, 0x00u},
                  sizeof(b)) == 0);
 
     /* auto-increment across separate read calls, one byte at a time */
     i2c_pos_select(2u);
     CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x34u);
-    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x12u);
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x01u);
     CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* status */
     CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* past the map */
     CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0u);     /* stays zero */
@@ -345,14 +353,14 @@ static void test_i2c_pos(void)
     p.valid = true;
     p.turns = 5u;
     p.angle = 9u;
-    i2c_pos_update(&p);
-    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x00u);  /* angle hi of 9 */
+    i2c_pos_update(&p); /* count 81,929 = 0x014009 */
+    CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == 0x00u);  /* count byte 3 */
     CHECK(i2c_pos_read(b, 1u) == 1u && b[0] == I2C_POS_STATUS_VALID);
 
     /* window through the middle of the map (pointer + partial read) */
     i2c_pos_select(1u);
     CHECK(i2c_pos_read(b, 2u) == 2u);
-    CHECK(memcmp(b, (uint8_t[]){0x00u, 0x09u}, 2u) == 0); /* turns hi, angle lo */
+    CHECK(memcmp(b, (uint8_t[]){0x40u, 0x01u}, 2u) == 0); /* count bytes 1..2 */
 }
 
 int main(void)
