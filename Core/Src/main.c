@@ -20,6 +20,7 @@
 #include "main.h"
 #include "i2c.h"
 #include "spi.h"
+#include "tim.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -52,6 +53,8 @@
  * consumer exists */
 static gear_angles_t g_angles;
 static gear_pos_t g_pos;
+/* set by the TIM2 update interrupt: the main loop takes one sample per tick */
+static volatile uint32_t g_sample_tick;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,16 +100,17 @@ int main(void)
   MX_SPI1_Init();
   MX_I2C1_Init();
   MX_SPI2_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   app_hal.init();
   if (!gear_decode_init())
   {
     Error_Handler(); /* gear config invalid, see App/gear_config.h */
   }
-  /* 1 kHz sample clock: the loop waits until this target, then re-anchors
-   * it one period ahead, so sample instants stay fixed-frequency and can
-   * never drift with processing time */
-  uint32_t next_sample_us = app_hal.now_us() + GEAR_SAMPLE_PERIOD_US;
+  /* 1 kHz sample clock: TIM2 updates every 1 ms (PSC 71, ARR 999) and its
+   * interrupt flags g_sample_tick; the loop sleeps until each tick so sample
+   * instants are anchored to the timer and cannot drift */
+  HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -116,15 +120,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* wait for the next fixed sample instant; signed comparison keeps it
-     * correct across the 32-bit µs counter wrap-around, and a slow
-     * iteration just falls through once and re-syncs the phase */
-    uint32_t now = app_hal.now_us();
-    while ((int32_t)(now - next_sample_us) < 0)
+    /* sleep until the next TIM2 tick (spurious SysTick wakeups are harmless);
+     * a slow iteration simply skips a sample and re-syncs on the next tick */
+    while (!g_sample_tick)
     {
-      now = app_hal.now_us();
+      __WFI();
     }
-    next_sample_us += GEAR_SAMPLE_PERIOD_US;
+    g_sample_tick = 0u;
 
     mt6701_sample_t sample;
     if (mt6701_read_sample(ENC_SUN, &sample) == 0)
@@ -143,7 +145,7 @@ int main(void)
     {
       g_angles.gear3 = sample.angle;
     }
-g_pos = gear_decode(&g_angles);
+    g_pos = gear_decode(&g_angles);
     }
   /* USER CODE END 3 */
 }
@@ -188,6 +190,16 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* TIM2 update event: just flags the loop - the sampling itself (SPI reads,
+ * CRC, gear decode) runs in the main loop, not in interrupt context. */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2)
+  {
+    g_sample_tick = 1u;
+  }
+}
 
 /* USER CODE END 4 */
 

@@ -29,7 +29,7 @@ typedef struct
     /** Chip-select line of the given encoder (asserted = active low). */
     void (*spi_cs)(encoder_role_t enc, bool asserted);
 
-    /** Monotonic microseconds since init. */
+    /** Monotonic microseconds since init (wrap-safe on arithmetic). */
     uint32_t (*now_us)(void);
 
     /** Busy-wait delay. */

@@ -64,19 +64,9 @@ _Static_assert(GEAR_TURN_RANGE <= (1u << GEAR_POS_BITS),                     \
  * slew guard in gear_decode rejects larger jumps (a misread gear decodes
  * to a jump of a multiple of the other gears' product -- hundreds of
  * turns -- which no real shaft makes between samples).  Sized for the
- * worst-case shaft speed at the GEAR_SAMPLE_PERIOD_US cadence: 1 turn
- * per 1 ms sample allows 1000 turns/s (~360,000 deg/s).
+ * worst-case shaft speed at the 1 kHz sample cadence (TIM2.ARR in CubeMX,
+ * tim.c): 1 turn per 1 ms sample allows 1000 turns/s (~360,000 deg/s).
  */
 #define GEAR_MAX_TURNS_DELTA 1u
-
-/**
- * Decode-loop sample cadence (µs).  The main loop samples on instants
- * spaced exactly by this period (fixed-frequency scheduler, see main.c);
- * GEAR_MAX_TURNS_DELTA is sized for the worst-case shaft speed at this
- * period -- keep the two in sync when either changes.  1 kHz is the
- * standard absolute-encoder update rate; even a worst-case burst (4 SSI
- * frames with all retries) stays under 0.2 ms, ~6x margin.
- */
-#define GEAR_SAMPLE_PERIOD_US 1000u
 
 #endif /* APP_GEAR_CONFIG_H */
