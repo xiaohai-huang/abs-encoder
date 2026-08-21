@@ -80,7 +80,6 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
         }
 
         sample.Angle = angle;
-        sample.IsButtonPressed = (status & StatusButtonMask) != 0u;
         return Ok;
     }
 

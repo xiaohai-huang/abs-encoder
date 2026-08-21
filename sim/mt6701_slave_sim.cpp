@@ -23,10 +23,6 @@ Mt6701SlaveSim::SimulatedChip
 void Mt6701SlaveSim::BuildFrame(SimulatedChip& chip)
 {
     uint32_t frame = static_cast<uint32_t>(chip.Angle & Mt6701::AngleMax) << 10;
-    if (chip.IsButtonPressed)
-    {
-        frame |= 1u << 8; /* frame bit 8 = Z / push state */
-    }
     if (chip.HasTrackLoss)
     {
         frame |= 1u << 9; /* frame bit 9 = track loss */
@@ -50,7 +46,6 @@ void Mt6701SlaveSim::Init()
     for (size_t i = 0u; i < Mt6701::EncoderCount; i++)
     {
         _chips[i].Angle = 0u;
-        _chips[i].IsButtonPressed = false;
         _chips[i].HasTrackLoss = false;
         _chips[i].IsCrcBroken = false;
         _chips[i].IsStuck = false;
@@ -108,14 +103,6 @@ void Mt6701SlaveSim::SetAngle(EncoderRole encoder, uint16_t angle)
     if (encoder < EncoderRole::RoleCount)
     {
         _chips[RoleIndex(encoder)].Angle = angle & Mt6701::AngleMax;
-    }
-}
-
-void Mt6701SlaveSim::SetButton(EncoderRole encoder, bool pressed)
-{
-    if (encoder < EncoderRole::RoleCount)
-    {
-        _chips[RoleIndex(encoder)].IsButtonPressed = pressed;
     }
 }
 

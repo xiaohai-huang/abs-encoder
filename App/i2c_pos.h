@@ -32,15 +32,34 @@ public:
      *               is 13 bits and the 14-bit fine angle makes the combined
      *               value a 27-bit integer, so it fits one uint32 and
      *               counts continuously across the turn boundary)
-     *   0x04        status: bit0 = 1 when the sample passed the slew guard */
-    static constexpr uint8_t RegisterStatus = 0x04u;
-    static constexpr uint8_t RegisterCount  = 5u;
+     *   0x04        status: one byte carrying the whole sample verdict --
+     *               bit0 = 1 when the last sample is fresh and accepted
+     *               (all four encoder reads succeeded AND the slew guard
+     *               passed, i.e. the register reads exactly StatusValid);
+     *               bits 1..4 name any encoder whose read failed on the
+     *               last sample (bit1 = Sun .. bit4 = Gear3)
+     *   0x05..0x06  sample counter, uint16 LE: +1 per sample (wraps); a
+     *               polling host sees sampling is alive when it changes */
+    static constexpr uint8_t RegisterStatus  = 0x04u;
+    static constexpr uint8_t RegisterCounter = 0x05u;
+    static constexpr uint8_t RegisterCount   = 7u;
 
     /** Fine-angle steps per whole turn (Mt6701::AngleMax + 1).  The
      *  combined count the map exports is turns * this + angle. */
     static constexpr uint32_t CountsPerTurn = Mt6701::AngleMax + 1u;
 
-    static constexpr uint8_t StatusValid = 0x01u; /* slew guard accepted */
+    /** The status register reads exactly this when the sample is
+     *  certified; anything else means a read failed (bits 1..4) or the
+     *  slew guard rejected the decode (0x00). */
+    static constexpr uint8_t StatusValid = 0x01u;
+
+    /** Status bit of a role, set when that encoder's read failed on the
+     *  last sample.  Bits 1..4, numbering follows EncoderRole order
+     *  (Sun = bit1 .. Gear3 = bit4); bit0 of the register is StatusValid. */
+    static constexpr uint8_t HealthBit(EncoderRole role)
+    {
+        return static_cast<uint8_t>(1u << (static_cast<uint8_t>(role) + 1u));
+    }
 
     /** Start from an empty snapshot (all zeros, cursor at register 0). */
     PositionRegister();
@@ -49,13 +68,19 @@ public:
     void Init();
 
     /**
-     * Refresh the exported snapshot from the latest decode.  Called once
+     * Refresh the exported snapshot from the latest sample.  Called once
      * per sample from the sample loop.  The position is packed into a
      * single 32-bit word before publishing, so a concurrent reader
-     * (address-match ISR) sees either the old or the new snapshot, never
-     * a mix.
+     * (address-match ISR) sees either the old or the new count, never a
+     * mix.
+     * @param position   decoded position (Turns/Angle always exported)
+     * @param readHealth one HealthBit per encoder whose read failed on
+     *                   this sample; any set bit also clears the status
+     *                   valid bit, so the status byte stays a single
+     *                   self-consistent verdict.  The counter and status
+     *                   bytes always reflect this Update.
      */
-    void Update(const GearPosition& position);
+    void Update(const GearPosition& position, uint8_t readHealth);
 
     /** Set the register pointer (the byte a host writes before reading);
      *  values past the map clamp to it so reads stay zero-filled. */
@@ -74,7 +99,8 @@ public:
 
 private:
     uint32_t _positionSnapshot; /* regs 0x00..0x03: position count */
-    uint8_t  _statusByte;       /* reg 0x04 */
+    uint8_t  _statusByte;       /* reg 0x04: bit0 valid, bits 1..4 health */
+    uint16_t _sampleCounter;    /* regs 0x05..0x06: liveness, +1 per sample */
     uint8_t  _registerCursor;   /* register pointer (host-writable),
                                    clamped to RegisterCount */
 };

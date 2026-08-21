@@ -10,7 +10,7 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
   - `mt6701.h/.cpp` — MT6701 SSI protocol layer (`class Mt6701`, stateless): 24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `Mt6701Crc6Enabled`). All calls are indexed by `EncoderRole` — `Sun` is the input shaft, `Gear1..3` the driven gears (wiring: Gear1/2 on SPI1 via CSN1/CSN2, Sun/Gear3 on SPI2 via CSN4/CSN3 — the `_encoderWiring` table in `hal_stm32.cpp`)
   - `gear_config.h` — compile-time mechanical config: `enum class EncoderRole` plus the `GearConfig` `constexpr` namespace (input + driven tooth counts, turn-field width, slew limit); changing gears = edit this header, rebuild, reflash
   - `gear_decode.h/.cpp` — absolute multi-turn decode (`class GearDecoder`): the constructor validates the geometry, per-sample CRT over the three gear residues, slew-guarded (jumps > `GearConfig::MaxTurnsDelta` rejected as misreads, last position held). No storage; the only state is the last accepted turn count
-  - `i2c_pos.h/.cpp` — I2C slave host port (`class PositionRegister`, shared `positionRegister` instance): the decoded position as one combined 27-bit count (`turns·16384 + angle`) plus a status/valid byte, pure logic (no HAL). The snapshot is packed into one 32-bit word so an address-match read can never tear; wire protocol in `docs/i2c.md`
+  - `i2c_pos.h/.cpp` — I2C slave host port (`class PositionRegister`, shared `positionRegister` instance): the decoded position as one combined 27-bit count (`turns·16384 + angle`), a one-byte status (bit0 = valid, bits 1..4 = per-encoder read health) and a 16-bit sample counter; pure logic (no HAL). The snapshot is packed into one 32-bit word so an address-match read can never tear; wire protocol in `docs/i2c.md`
   - `app_entry.h/.cpp` — the only C-compatible surface (`extern "C"` `AppInit` / `AppProcessSample`): owns the firmware's sample state and decoder instance, called from the CubeMX-generated C `main.c`
   - `hal_stm32.cpp` — STM32 backend (`class Stm32Hal`): SPI1 + SPI2, role-keyed `_encoderWiring` wiring table binding each `EncoderRole` to its CSN pin and SPI bus, DWT µs clock, and the I2C1 slave transport (own address applied at runtime, EV/ER interrupts, listen-IT callbacks); the only firmware file that touches STM32 HAL
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
@@ -24,6 +24,7 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
 - `docs/MT6701.md` — MT6701 datasheet summary (Rev 1.8); the protocol layer is verified against it
 - `docs/architecture.md` — battery-free multi-turn design (coprime gear phase tracking: 13-tooth input gear driving 17/19/23-tooth gears, each with its own MT6701; 7,429-turn absolute range)
 - `docs/i2c.md` — I2C host port spec (slave address, register map, transactions)
+- `docs/i2c-host-guide.md` — host-side integration guide (wire walk-through, STM32 HAL example code)
 - `STM32F103XX_FLASH.ld` — linker script (custom scatter file referenced by `.eide/eide.yml`)
 - `startup_stm32f103xb.s` — startup assembly
 - `.eide/eide.yml` — Embedded IDE (EIDE) project: Debug and Release targets, toolchain and flash settings

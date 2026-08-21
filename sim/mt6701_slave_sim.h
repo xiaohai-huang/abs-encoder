@@ -30,7 +30,6 @@ public:
 
     /* Test controls (per encoder role) ---------------------------------- */
     static void SetAngle(EncoderRole encoder, uint16_t angle);       /* 0..16383 */
-    static void SetButton(EncoderRole encoder, bool pressed);
     static void SetTrackLoss(EncoderRole encoder, bool enabled);
     static void SetFieldStatus(EncoderRole encoder, uint8_t status); /* 0 = normal */
     static void SetCrcBroken(EncoderRole encoder, bool broken);
@@ -40,7 +39,6 @@ private:
     struct SimulatedChip
     {
         uint16_t Angle;
-        bool     IsButtonPressed;
         bool     HasTrackLoss;
         bool     IsCrcBroken;
         bool     IsStuck;

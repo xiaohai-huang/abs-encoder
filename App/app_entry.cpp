@@ -34,23 +34,42 @@ extern "C" int AppInit(void)
 extern "C" void AppProcessSample(void)
 {
     Mt6701Sample sample;
+    uint8_t readHealth = 0u; /* bit per role, see PositionRegister::HealthBit */
+
     if (Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == 0)
     {
         _sampleAngles.Sun = sample.Angle;
+    }
+    else
+    {
+        readHealth |= PositionRegister::HealthBit(EncoderRole::Sun);
     }
     if (Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == 0)
     {
         _sampleAngles.Gear1 = sample.Angle;
     }
+    else
+    {
+        readHealth |= PositionRegister::HealthBit(EncoderRole::Gear1);
+    }
     if (Mt6701::ReadSample(hal, EncoderRole::Gear2, sample) == 0)
     {
         _sampleAngles.Gear2 = sample.Angle;
+    }
+    else
+    {
+        readHealth |= PositionRegister::HealthBit(EncoderRole::Gear2);
     }
     if (Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == 0)
     {
         _sampleAngles.Gear3 = sample.Angle;
     }
+    else
+    {
+        readHealth |= PositionRegister::HealthBit(EncoderRole::Gear3);
+    }
 
     GearPosition position = _gearDecoder.Decode(_sampleAngles);
-    positionRegister.Update(position); /* publish to the I2C slave register map */
+    positionRegister.Update(position, readHealth); /* publish to the I2C
+                                                    * slave register map */
 }

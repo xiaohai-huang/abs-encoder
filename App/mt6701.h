@@ -7,8 +7,8 @@
  * reference drivers use and matches the CubeMX SPI1/SPI2 config):
  *   bits 23..10  14-bit angle (0..16383 = 0..360 deg)
  *   bit  9       track loss (Mg[3])
- *   bit  8       push-magnet (Mg[2])
- *   bits 7..6    field status (Mg[1:0], 0 = normal)
+ *   bits 8..6    status (Mg[2:0]); only Mg[1:0] (field strength) is checked,
+ *                Mg[2] (push button) is not used by this firmware
  *   bits 5..0    CRC-6 (see Mt6701::ComputeCrc6)
  *
  * Every call is indexed by encoder role (EncoderRole in gear_config.h):
@@ -38,8 +38,7 @@ class Hal; /* platform backend, defined in hal.h; the MT6701 protocol only
 
 struct Mt6701Sample
 {
-    uint16_t Angle;           /* 0..16383 */
-    bool     IsButtonPressed; /* push-magnet state */
+    uint16_t Angle; /* 0..16383 */
 };
 
 /** MT6701 SSI protocol layer; stateless, all calls are static. */
@@ -99,7 +98,6 @@ private:
 
     /* bits of the resolved status byte (frame bits 9..6 shifted down). */
     static constexpr uint8_t StatusTrackLossMask = 0x08u; /* bit 3 */
-    static constexpr uint8_t StatusButtonMask    = 0x04u; /* bit 2 */
     static constexpr uint8_t StatusFieldMask     = 0x03u; /* bits 1..0 */
 
     static uint8_t UpdateCrc6(uint8_t crc, uint8_t frameByte, int bitCount);
