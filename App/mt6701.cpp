@@ -10,29 +10,30 @@ uint8_t Mt6701::UpdateCrc6(uint8_t crc, uint8_t frameByte, int bitCount)
 {
     for (int bitIndex = bitCount - 1; bitIndex >= 0; bitIndex--)
     {
-        uint8_t xorBit = static_cast<uint8_t>((crc >> 5) ^
+        uint8_t xorBit = static_cast<uint8_t>((crc >> CrcTopBitShift) ^
                                               ((frameByte >> bitIndex) & 1u));
-        crc = static_cast<uint8_t>((crc << 1) & 0x3Fu);
+        crc = static_cast<uint8_t>((crc << 1) & CrcFieldMask);
         if (xorBit != 0u)
         {
-            crc = static_cast<uint8_t>((crc ^ Crc6Polynomial) & 0x3Fu);
+            crc = static_cast<uint8_t>((crc ^ Crc6Polynomial) & CrcFieldMask);
         }
     }
     return crc;
 }
 
-uint8_t Mt6701::ComputeCrc6(const uint8_t frame[3])
+uint8_t Mt6701::ComputeCrc6(const uint8_t frame[BytesInFrame])
 {
-    uint8_t crc = UpdateCrc6(0u, frame[0], 8);
-    crc = UpdateCrc6(crc, frame[1], 8);
-    return UpdateCrc6(crc, static_cast<uint8_t>(frame[2] >> 6), 2);
+    uint8_t crc = UpdateCrc6(0u, frame[0], BitsInByte);
+    crc = UpdateCrc6(crc, frame[1], BitsInByte);
+    return UpdateCrc6(crc, static_cast<uint8_t>(frame[2] >> CrcFieldBits),
+                      BitsInByte - CrcFieldBits);
 }
 
-int Mt6701::ReadFrame(Hal& hal, EncoderRole encoder, uint8_t frame[3])
+int Mt6701::ReadFrame(Hal& hal, EncoderRole encoder, uint8_t frame[BytesInFrame])
 {
     /* SSI is unidirectional: MOSI is don't-care while the chip shifts out. */
     hal.SelectChip(encoder, true); /* assert (pull low): active-low chip select */
-    for (uint32_t byteIndex = 0u; byteIndex < 3u; byteIndex++)
+    for (uint32_t byteIndex = 0u; byteIndex < BytesInFrame; byteIndex++)
     {
         frame[byteIndex] = hal.SpiTransfer(encoder, 0u);
     }
@@ -44,17 +45,21 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
 {
     if (encoder >= EncoderRole::RoleCount)
     {
-        return -2;
+        return ErrNoValidFrame;
     }
     bool sawFault = false;
 
     for (int attempt = 0; attempt < MaxReadRetries; attempt++)
     {
-        uint8_t frame[3];
+        uint8_t frame[BytesInFrame];
         ReadFrame(hal, encoder, frame);
 
+        uint32_t raw = (static_cast<uint32_t>(frame[0]) << (2 * BitsInByte)) |
+                       (static_cast<uint32_t>(frame[1]) << BitsInByte) |
+                       static_cast<uint32_t>(frame[2]);
+
 #if Mt6701Crc6Enabled
-        if (ComputeCrc6(frame) != (frame[2] & 0x3Fu))
+        if (ComputeCrc6(frame) != static_cast<uint8_t>(raw & CrcFieldMask))
         {
             hal.DelayMicroseconds(RetryDelayMicroseconds);
             continue;
@@ -62,13 +67,12 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
 #endif
 
         uint16_t angle = static_cast<uint16_t>(
-            (static_cast<uint16_t>(frame[0]) << 6) |
-            (static_cast<uint16_t>(frame[1]) >> 2));
+            (raw >> AngleFieldShift) & AngleFieldMask);
         uint8_t status = static_cast<uint8_t>(
-            ((frame[1] & 0x03u) << 2) | (frame[2] >> 6));
+            (raw >> StatusFieldShift) & RawStatusMask);
 
-        /* status: bit3 = track loss, bit2 = button, bits1..0 = field status. */
-        if ((status & 0x08u) != 0u || (status & 0x03u) != 0u)
+        if ((status & StatusTrackLossMask) != 0u ||
+            (status & StatusFieldMask) != 0u)
         {
             sawFault = true;
             hal.DelayMicroseconds(RetryDelayMicroseconds);
@@ -76,9 +80,9 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
         }
 
         sample.Angle = angle;
-        sample.IsButtonPressed = (status & 0x04u) != 0u;
-        return 0;
+        sample.IsButtonPressed = (status & StatusButtonMask) != 0u;
+        return Ok;
     }
 
-    return sawFault ? -1 : -2;
+    return sawFault ? ErrFault : ErrNoValidFrame;
 }
