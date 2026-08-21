@@ -1,6 +1,7 @@
 /**
  * @file gear_decode.cpp
- * @brief Multi-turn position decoder using three driven gears (17/19/23 teeth).
+ * @brief Multi-turn position decoder using three driven gears (tooth counts
+ *        are declared in gear_config.h).
  *
  * HOW IT WORKS (plain language):
  *   1. Each sensor gives a raw angle (0..16383). Convert to a tooth number.

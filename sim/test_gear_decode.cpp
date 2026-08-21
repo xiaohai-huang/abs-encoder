@@ -76,6 +76,49 @@ static uint16_t& GearAngleField(GearAngles& angles, size_t gearIndex)
     return angles.Gear3;
 }
 
+/* Const read side of GearAngleField. */
+static uint16_t GearAngleValue(const GearAngles& angles, size_t gearIndex)
+{
+    if (gearIndex == 0u) return angles.Gear1;
+    if (gearIndex == 1u) return angles.Gear2;
+    return angles.Gear3;
+}
+
+/* The decoder's count -> tooth mapping, restated: tooth k spans
+ * [ceil((16384k - 8192) / teeth), floor((16384k + 8191) / teeth)]. */
+static uint32_t CountToTooth(uint32_t rawCount, size_t gearIndex)
+{
+    uint32_t teeth = GearConfig::DrivenTeethCounts[gearIndex];
+    return ((rawCount * teeth + 8192u) / 16384u) % teeth;
+}
+
+/* The absolute turn count a sample should decode to: the unique T in
+ * [0, TurnRange) whose gear teeth match the sample's.  A brute-force CRT
+ * oracle (at most TurnRange <= 8192 scans) kept independent of the
+ * decoder's closed-form pairing so it can validate it. */
+static uint32_t ExpectedDecodedTurns(const GearAngles& angles)
+{
+    for (uint32_t turns = 0u; turns < GearConfig::TurnRange; turns++)
+    {
+        bool matches = true;
+        for (size_t i = 0u; i < GearConfig::DrivenCount; i++)
+        {
+            uint32_t teeth = GearConfig::DrivenTeethCounts[i];
+            uint32_t expectedTooth = (GearConfig::InputTeeth * turns) % teeth;
+            if (CountToTooth(GearAngleValue(angles, i), i) != expectedTooth)
+            {
+                matches = false;
+                break;
+            }
+        }
+        if (matches)
+        {
+            return turns;
+        }
+    }
+    return 0u; /* unreachable while the geometry is valid */
+}
+
 /* Raw-count range that maps to one tooth: the decoder rounds
  * count -> tooth via ((count * teeth + 8192) / 16384) % teeth, so tooth k
  * spans [ceil((16384k - 8192) / teeth), floor((16384k + 8191) / teeth)]. */
@@ -140,10 +183,10 @@ static void TestAngleEdges()
 {
     std::printf("raw-count extremes 0/1/16382/16383 stay inside tooth 0\n");
     /* With a reference at 0 every gear sits in tooth 0, and tooth 0's raw
-     * range spans both ends of the 14-bit angle: the low tail [0, ~481]
-     * and the high tail [~15903, 16383] (17 x 964 > 16384, so the last
-     * slot wraps onto the first).  All four fields may therefore take the
-     * extreme counts without changing the decode. */
+     * range spans both ends of the 14-bit angle: the low tail [0, ~8192/teeth]
+     * and the high tail [16384 - 8192/teeth, 16383] (the wrap always lands
+     * in tooth 0 for any tooth count below 8192).  All four fields may
+     * therefore take the extreme counts without changing the decode. */
     const uint16_t edgeCounts[] = {0u, 1u, Mt6701::AngleMax - 1u,
                                    Mt6701::AngleMax};
     for (size_t fieldIndex = 0u; fieldIndex < 4u; fieldIndex++)
@@ -178,30 +221,41 @@ static void TestAngleEdges()
     CHECK(position.Angle == Mt6701::AngleMax);
 
     /* One count past the slot edge of tooth 0 is the first count of tooth
-     * 1: gear1 = 482 alone decodes to 2622 turns (residue (1,0,0):
-     * 19 * 23 * (4 * 13^{-1} mod 17 = 6) = 2622).  Fresh from reset it is
-     * accepted as a reference; with a reference at 0 the guard rejects it. */
-    GearDecoder freshDecoder;
-    GearAngles misreadAngles = {0u, 482u, Mt6701::AngleMax,
+     * 1: gear1 crossing the edge alone decodes to a misread turn count.
+     * Fresh from reset it is accepted as a reference; with a reference at
+     * 0 the guard rejects it.  The expected value comes from the CRT
+     * oracle, so it tracks whatever geometry GearConfig declares. */
+    const uint16_t lastCountOfTooth0 =
+        ToothSlotHigh(0u, GearConfig::DrivenTeethCounts[0]);
+    const uint16_t firstCountOfTooth1 =
+        ToothSlotLow(1u, GearConfig::DrivenTeethCounts[0]);
+
+    GearAngles misreadAngles = {0u, firstCountOfTooth1, Mt6701::AngleMax,
                                 Mt6701::AngleMax};
+    uint32_t expectedMisread = ExpectedDecodedTurns(misreadAngles);
+    /* A single-tooth slip on a driven gear jumps by at least the product of
+     * the other two gears: the guard rejection below is meaningful. */
+    CHECK(CircularDistance(expectedMisread, 0u) > GearConfig::MaxTurnsDelta);
+
+    GearDecoder freshDecoder;
     position = freshDecoder.Decode(misreadAngles);
     CHECK(position.IsValid);
-    CHECK(position.Turns == 2622u);
+    CHECK(position.Turns == expectedMisread);
 
     GearAngles anglesAtTurn0 = CreateAnglesFor(0u);
     decoder.Reset();
     CHECK(decoder.Decode(anglesAtTurn0).IsValid); /* reference at turn 0 */
-    allExtremes.Gear1 = 481u;                     /* last count of tooth 0 */
+    allExtremes.Gear1 = lastCountOfTooth0;        /* last count of tooth 0 */
     position = decoder.Decode(allExtremes);
     CHECK(position.IsValid);
     CHECK(position.Turns == 0u);
 
-    allExtremes.Gear1 = 482u; /* first count of tooth 1 */
+    allExtremes.Gear1 = firstCountOfTooth1; /* first count of tooth 1 */
     position = decoder.Decode(allExtremes);
     CHECK(!position.IsValid);
-    /* .Turns carries the decoded-but-rejected 2622-turn reading: the
-     * guard rejects it, it was never accepted as the position */
-    CHECK(position.Turns == 2622u);
+    /* .Turns carries the decoded-but-rejected reading: the guard rejects
+     * it, it was never accepted as the position */
+    CHECK(position.Turns == expectedMisread);
     CHECK(position.Angle == Mt6701::AngleMax);
 }
 
@@ -209,8 +263,8 @@ static void TestSlotQuantization()
 {
     std::printf("every count inside a tooth slot decodes to the same turns\n");
     /* The low and high edge of the expected slot are far apart (up to a
-     * full slot, ~964 counts on the 17T gear) yet must map to the same
-     * tooth and thus the same absolute position. */
+     * full slot, ~16384/teeth counts) yet must map to the same tooth and
+     * thus the same absolute position. */
     const uint32_t turnCounts[] = {0u, 1234u, 4000u, GearConfig::TurnRange - 1u};
     for (size_t turnIndex = 0u;
          turnIndex < sizeof(turnCounts) / sizeof(turnCounts[0]);
@@ -275,7 +329,8 @@ static void TestNoiseAndSmallSteps()
 
 static void TestWrapSeam()
 {
-    std::printf("7429-turn seam: distance-1 steps wrap, distance-2 rejected\n");
+    std::printf("%u-turn seam: distance-1 steps wrap, distance-2 rejected\n",
+                (unsigned)GearConfig::TurnRange);
     GearAngles anglesAtTurn0 = CreateAnglesFor(0u);
 
     /* +1 across the seam: 7428 -> 0. */
@@ -334,13 +389,24 @@ static void TestSlewGuardSemantics()
     GearDecoder decoder;
     CHECK(decoder.Decode(angles).IsValid);
 
-    /* Tooth +1 on the 23T gear shifts the residue by 13^{-1} = 16, i.e. by
-     * 17 * 19 * 16 = 5168 turns: rejected, .Turns still carries the
-     * rejected decode (7 + 5168), .Angle echoes sun. */
-    angles.Gear3 = AddOffset(angles.Gear3, 16384 / 23);
-    GearPosition position = decoder.Decode(angles);
+    /* One tooth ahead on the last driven gear: its residue shifts by the
+     * modular inverse of the input teeth, so the decode jumps by the other
+     * gears' product -- rejected; .Turns still carries the rejected
+     * decode, .Angle echoes sun. */
+    size_t lastGearIndex = GearConfig::DrivenCount - 1u;
+    uint32_t lastGearTeeth = GearConfig::DrivenTeethCounts[lastGearIndex];
+    uint32_t trueTooth = (GearConfig::InputTeeth * 7u) % lastGearTeeth;
+    GearAngles misread = CreateAnglesFor(7u);
+    misread.Sun = 0x55AAu; /* the rejected read still echoes the sun angle */
+    GearAngleField(misread, lastGearIndex) =
+        ToothSlotLow((trueTooth + 1u) % lastGearTeeth, lastGearTeeth);
+    uint32_t expectedMisread = ExpectedDecodedTurns(misread);
+    /* A one-tooth slip must land beyond the slew limit. */
+    CHECK(CircularDistance(expectedMisread, 7u) > GearConfig::MaxTurnsDelta);
+
+    GearPosition position = decoder.Decode(misread);
     CHECK(!position.IsValid);
-    CHECK(position.Turns == 5175u);
+    CHECK(position.Turns == expectedMisread);
     CHECK(position.Angle == 0x55AAu);
 
     /* The guard still measures from turn 7, so 8 is accepted next. */
@@ -478,11 +544,20 @@ static void TestFullRangeSweep()
 {
     std::printf("all %u states decode with in-slot offsets on every gear\n",
                 (unsigned)GearConfig::TurnRange);
-    /* Offsets stay inside every tooth slot: the narrowest slot is the 23T
-     * gear's (16384/23 ~= 712 counts, half ~= 356), and the slots of tooth
-     * 0 and the last tooth both touch the 14-bit wrap, so +/-300 covers
-     * the edges without crossing into a neighbor tooth. */
-    const int32_t offsets[] = {-300, 0, 300};
+    /* Offsets stay inside every tooth slot: size them from the narrowest
+     * slot (the gear with the most teeth), with a 2-count rounding margin,
+     * so the same probe works for any valid geometry. */
+    uint32_t maxTeeth = 0u;
+    for (size_t i = 0u; i < GearConfig::DrivenCount; i++)
+    {
+        if (GearConfig::DrivenTeethCounts[i] > maxTeeth)
+        {
+            maxTeeth = GearConfig::DrivenTeethCounts[i];
+        }
+    }
+    const int32_t maxOffset = (int32_t)(8192u / maxTeeth) - 2;
+    CHECK(maxOffset > 0); /* premise: the half-slot covers the probe */
+    const int32_t offsets[] = {-maxOffset, 0, maxOffset};
     for (uint32_t turns = 0u; turns < GearConfig::TurnRange; turns++)
     {
         for (size_t firstOffsetIndex = 0u;

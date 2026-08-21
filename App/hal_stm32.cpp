@@ -15,13 +15,15 @@
 
 /* Explicit wiring, keyed by encoder role (see the role table in
  * gear_config.h); each row binds one CSN label and one SPI bus to the
- * wheel it senses.  The labels come from the CubeMX User Labels
- * (main.h) and the rows must match the physical board:
+ * wheel it senses.  Tooth counts are deliberately not listed here -- they
+ * live in GearConfig (gear_config.h), the one file to edit when the
+ * gearbox changes.  The labels come from the CubeMX User Labels (main.h)
+ * and the rows must match the physical board:
  *
- *   Sun    <- CSN4 on SPI2   (sun gear, 13T)
- *   Gear1  <- CSN1 on SPI1   (driven gear, 17T)
- *   Gear2  <- CSN2 on SPI1   (driven gear, 19T)
- *   Gear3  <- CSN3 on SPI2   (driven gear, 23T)
+ *   Sun    <- CSN4 on SPI2
+ *   Gear1  <- CSN1 on SPI1
+ *   Gear2  <- CSN2 on SPI1
+ *   Gear3  <- CSN3 on SPI2
  *
  * The table is positional: EncoderRole order Sun, Gear1, Gear2, Gear3. */
 struct EncoderWiring
