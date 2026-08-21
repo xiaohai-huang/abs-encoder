@@ -23,3 +23,6 @@
 /CMakeLists.txt
 /CMakePresets.json
 /cmake/
+
+# ZCode
+.zcode/plans
