@@ -56,9 +56,10 @@ void gear_decode_reset(void);
  * Decode one set of four angle samples into the absolute position.
  * @param a angle counts by role (.sun, .gear1..3).
  * @return position; .valid is false when the decoded position would jump
- *         more than GEAR_MAX_TURNS_DELTA from the previous sample (the
- *         last accepted position is held and reported).  The first sample
- *         after init/reset is always accepted.
+ *         more than GEAR_MAX_TURNS_DELTA from the previous accepted
+ *         sample.  On rejection .turns still carries that decoded-but-
+ *         rejected count (do not use it) and .angle echoes a->sun.  The
+ *         first sample after init/reset is always accepted.
  */
 gear_pos_t gear_decode(const gear_angles_t *a);
 

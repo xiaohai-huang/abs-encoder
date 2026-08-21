@@ -15,7 +15,9 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
   - `hal_sim.c` — PC backend (QPC clock, SPI bridged to the fake chip)
   - `mt6701_slave_sim.c/.h` — simulated MT6701 speaking the real 24-bit SSI frame, with fault/CRC injection controls
-  - `sim_main.c` — assert-based test harness, `Makefile` (`make run`)
+  - `sim_main.c` — assert-based integration harness (SSI read path, I2C register map)
+  - `test_gear_decode.c` — standalone unit test of the `gear_decode` public API (links only `App/gear_decode.c`, no simulated hardware)
+  - `Makefile` (`make run`) — builds and runs both binaries
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
 - `docs/MT6701.md` — MT6701 datasheet summary (Rev 1.8); the protocol layer is verified against it
