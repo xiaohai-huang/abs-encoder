@@ -27,11 +27,11 @@
 * **Multi-Turn Memory Allocation:** 13-bit data structure.
 * *Capacity:* $2^{13} = 8192$ discrete values. This safely encapsulates the 7,429 mechanical states while providing an approximate 10% overflow safety margin.
 
-### **Firmware Decoding** (`App/gear_decode.c`, config in `App/gear_config.h`)
+### **Firmware Decoding** (`App/gear_decode.cpp`, config in `App/gear_config.h`)
 
 *   **Encoder Map:** MT6701 #0 reads the input shaft (14-bit fine angle); MT6701 #1..#3 read the 17/19/23-tooth driven gears.
 *   **Per-Sample Decode (CRT):** nearest tooth slot per gear $q_i = \mathrm{round}(t_i \cdot \mathrm{phase}_i)$, residue $r_i = q_i \cdot \mathrm{inv}(13 \bmod t_i) \bmod t_i$, turn count $N$ from the Chinese remainder theorem over $(t_1, t_2, t_3)$ → $0..7429$. No counters, no storage — the position is absolute at any instant.
-*   **Fault Detection is Temporal:** within one sample a misread gear is indistinguishable from a genuine neighbouring state (every residue triple is a valid code word — the tooth slot is the information unit). What a misread always produces is a decoded position jump of a multiple of the other gears' product (≥ 323 turns), which no real shaft makes between samples. The slew guard (`GEAR_MAX_TURNS_DELTA`, default 1 turn per sample at 1 kHz ≈ 1000 turns/s) rejects such jumps: the last accepted position is held and the sample flagged invalid.
+*   **Fault Detection is Temporal:** within one sample a misread gear is indistinguishable from a genuine neighbouring state (every residue triple is a valid code word — the tooth slot is the information unit). What a misread always produces is a decoded position jump of a multiple of the other gears' product (≥ 323 turns), which no real shaft makes between samples. The slew guard (`GearMaxTurnsDelta`, default 1 turn per sample at 1 kHz ≈ 1000 turns/s) rejects such jumps: the last accepted position is held and the sample flagged invalid.
 *   **Limits:** the 13-bit field covers the 7,429 states with ~10% margin; past 7,429 turns the reading aliases (a mechanical end-stop is assumed). Sensor noise within half a tooth slot (~350–480 counts at 14-bit) cannot flip the decode.
 
 ### Notes

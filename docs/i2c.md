@@ -7,7 +7,7 @@ when addressed, like any encoder IC (AS5600-style).
 
 ## Bus facts
 
-- Slave address: **0x50** (7-bit; `I2C_POS_ADDR` in `App/i2c_pos.h`).  On the
+- Slave address: **0x50** (7-bit; `PositionRegister::Address` in `App/i2c_pos.h`).  On the
   wire that is `0xA0` for write and `0xA1` for read transactions.
 - Standard mode, **100 kHz**, clock stretching enabled.
 - Pins: **PB6 (SCL), PB7 (SDA)**, open-drain alternate function.  The bus
@@ -69,8 +69,8 @@ harmless — the slave re-arms at the end of the transaction.
   whether to keep tracking on a stale reading.
 - Before the first sample the map reads all zeros and `status.valid = 0`.
 - The address, once configured, survives CubeMX regeneration: the generated
-  `i2c.c` keeps `OwnAddress1 = 0`; `hal_stm32.c` applies `I2C_POS_ADDR` at
-  runtime during `app_hal.init()`.
+  `i2c.c` keeps `OwnAddress1 = 0`; `hal_stm32.cpp` applies `PositionRegister::Address` at
+  runtime during `hal.Init()`.
 
 ### Valve position example
 

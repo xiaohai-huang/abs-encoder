@@ -2,40 +2,43 @@
  * @file hal.h
  * @brief Hardware abstraction interface (grblHAL-style).
  *
- * All application logic (mt6701.c) depends only on this
- * header and never touches MCU registers or STM32 HAL headers.  The SPI
- * byte exchange and chip-select calls are indexed by encoder
- * (0..MT6701_ENC_COUNT-1); the platform maps each encoder to a bus and a
- * CS line.  Exactly one implementation is linked per build:
- *   - hal_stm32.c  -- firmware (EIDE Debug/Release targets), 2 buses
- *   - hal_sim.c    -- PC test build (sim/Makefile), one chip per encoder
+ * All application logic (Mt6701) depends only on this header and never
+ * touches MCU registers or STM32 HAL headers.  The SPI byte exchange and
+ * chip-select calls are indexed by encoder (0..Mt6701::EncoderCount-1);
+ * the platform maps each encoder to a bus and a CS line.  Exactly one
+ * backend is linked per build, providing the `hal` instance:
+ *   - Stm32Hal (hal_stm32.cpp) -- firmware (EIDE Debug/Release targets)
+ *   - SimHal   (hal_sim.cpp)   -- PC test build (sim/Makefile)
  */
 #ifndef APP_HAL_H
 #define APP_HAL_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include <cstdint>
 
-#include "gear_config.h" /* encoder_role_t */
+#include "gear_config.h" /* EncoderRole */
 
-typedef struct
+class Hal
 {
+public:
+    virtual ~Hal() = default;
+
     /** One-time setup; call after clocks and peripherals are running. */
-    void (*init)(void);
+    virtual void Init() = 0;
 
     /** Full-duplex byte exchange with the given encoder, MSB first. */
-    uint8_t (*spi_transfer)(encoder_role_t enc, uint8_t tx);
+    virtual uint8_t SpiTransfer(EncoderRole encoder, uint8_t txByte) = 0;
 
     /** Chip-select line of the given encoder (asserted = active low). */
-    void (*spi_cs)(encoder_role_t enc, bool asserted);
+    virtual void SelectChip(EncoderRole encoder, bool asserted) = 0;
 
     /** Monotonic microseconds since init (wrap-safe on arithmetic). */
-    uint32_t (*now_us)(void);
+    virtual uint32_t GetMicroseconds() = 0;
 
     /** Busy-wait delay. */
-    void (*delay_us)(uint32_t us);
-} app_hal_t;
+    virtual void DelayMicroseconds(uint32_t microseconds) = 0;
+};
 
-extern const app_hal_t app_hal;
+/** The backend instance; exactly one backend is linked per build. */
+extern Hal& hal;
 
 #endif /* APP_HAL_H */

@@ -25,10 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "hal.h"
-#include "mt6701.h"
-#include "gear_decode.h"
-#include "i2c_pos.h"
+#include "app_entry.h" /* C entry point into the C++ application logic */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,13 +46,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* last valid angle per encoder role (kept across failed reads) and the
- * decoded multi-turn position; g_pos feeds the I2C slave port (i2c_pos.c),
- * which publishes it to any host on the bus (docs/i2c.md) */
-static gear_angles_t g_angles;
-static gear_pos_t g_pos;
-/* set by the TIM2 update interrupt: the main loop takes one sample per tick */
-static volatile uint32_t g_sample_tick;
+/* set by the TIM2 update interrupt: the main loop takes one sample per tick.
+ * All encoder/decoder state lives in App/ (app_entry.cpp), not here. */
+static volatile uint32_t _sampleTick;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -103,13 +96,12 @@ int main(void)
   MX_SPI2_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  app_hal.init();
-  if (!gear_decode_init())
+  if (!AppInit())
   {
     Error_Handler(); /* gear config invalid, see App/gear_config.h */
   }
   /* 1 kHz sample clock: TIM2 updates every 1 ms (PSC 71, ARR 999) and its
-   * interrupt flags g_sample_tick; the loop sleeps until each tick so sample
+   * interrupt flags _sampleTick; the loop sleeps until each tick so sample
    * instants are anchored to the timer and cannot drift */
   HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
@@ -123,31 +115,14 @@ int main(void)
     /* USER CODE BEGIN 3 */
     /* sleep until the next TIM2 tick (spurious SysTick wakeups are harmless);
      * a slow iteration simply skips a sample and re-syncs on the next tick */
-    while (!g_sample_tick)
+    while (!_sampleTick)
     {
       __WFI();
     }
-    g_sample_tick = 0u;
+    _sampleTick = 0u;
 
-    mt6701_sample_t sample;
-    if (mt6701_read_sample(ENC_SUN, &sample) == 0)
-    {
-      g_angles.sun = sample.angle;
-    }
-    if (mt6701_read_sample(ENC_GEAR_1, &sample) == 0)
-    {
-      g_angles.gear1 = sample.angle;
-    }
-    if (mt6701_read_sample(ENC_GEAR_2, &sample) == 0)
-    {
-      g_angles.gear2 = sample.angle;
-    }
-    if (mt6701_read_sample(ENC_GEAR_3, &sample) == 0)
-    {
-      g_angles.gear3 = sample.angle;
-    }
-    g_pos = gear_decode(&g_angles);
-    i2c_pos_update(&g_pos); /* publish to the I2C slave register map */
+    AppProcessSample(); /* sample all four encoders, decode, publish to the
+                         * I2C register map (App/app_entry.cpp) */
   }
   /* USER CODE END 3 */
 }
@@ -199,7 +174,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2)
   {
-    g_sample_tick = 1u;
+    _sampleTick = 1u;
   }
 }
 

@@ -41,13 +41,15 @@ targets:
         cpuType: Cortex-M3
         floatingPointHardware: none
         options:
-          version: 5
           afterBuildTasks: []
           asm-compiler: {}
           beforeBuildTasks: []
           c/cpp-compiler:
             language-c: c11
             language-cpp: c++11
+            no-exceptions: true
+            no-rtti: true
+            no-threadsafe-statics: true
             one-elf-section-per-data: true
             one-elf-section-per-function: true
             optimization: level-debug
@@ -61,7 +63,7 @@ targets:
           linker:
             $outputTaskExcludes:
               - .bin
-            $toolName: auto
+            $toolName: g++
             LIB_FLAGS: -lm
             output-format: elf
             remove-unused-input-sections: true
@@ -116,25 +118,28 @@ targets:
         options:
           version: 5
           afterBuildTasks: []
-          asm-compiler: {}
+          asm-compiler:
+            ASM_FLAGS: ""
           beforeBuildTasks: []
           c/cpp-compiler:
+            CXX_FLAGS: ""
+            C_FLAGS: ""
             language-c: c11
             language-cpp: c++11
             one-elf-section-per-data: true
             one-elf-section-per-function: true
-            optimization: level-size
+            optimization: level-debug
             warnings: all-warnings
           global:
             $float-abi-type: hard
-            arm-thumb-mode: thumb
+            misc-control: ""
             not-use-syscalls: true
             output-debug-info: enable
             use-newlib-nano: true
           linker:
             $outputTaskExcludes:
               - .bin
-            $toolName: auto
+            LD_FLAGS: ""
             LIB_FLAGS: -lm
             output-format: elf
             remove-unused-input-sections: true

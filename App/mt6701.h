@@ -9,55 +9,73 @@
  *   bit  9       track loss (Mg[3])
  *   bit  8       push-magnet (Mg[2])
  *   bits 7..6    field status (Mg[1:0], 0 = normal)
- *   bits 5..0    CRC-6 (see mt6701_crc6_compute)
+ *   bits 5..0    CRC-6 (see Mt6701::ComputeCrc6)
  *
- * Every call is indexed by encoder role (encoder_role_t in
- * gear_config.h): ENC_SUN is the input shaft, ENC_GEAR_1..3 the driven
- * gears.  On this board ENC_GEAR_1/2 share SPI1 (CSN1/CSN2) and
- * ENC_SUN/ENC_GEAR_3 share SPI2 (CSN4/CSN3); the role maps to bus and CS
- * in the HAL implementations (s_enc table in hal_stm32.c).
- * Only this file and the simulated chips (sim/mt6701_slave_sim.c) know
- * the frame format; everything else consumes a resolved 14-bit angle.
+ * Every call is indexed by encoder role (EncoderRole in gear_config.h):
+ * Sun is the input shaft, Gear1..3 the driven gears.  On this board
+ * Gear1/2 share SPI1 (CSN1/CSN2) and Sun/Gear3 share SPI2 (CSN4/CSN3);
+ * the role maps to bus and CS in the HAL backends (wiring table in
+ * hal_stm32.cpp).  Only this file and the simulated chips
+ * (sim/mt6701_slave_sim.cpp) know the frame format; everything else
+ * consumes a resolved 14-bit angle.
  */
 #ifndef APP_MT6701_H
 #define APP_MT6701_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include <cstdint>
 
-#include "gear_config.h" /* encoder_role_t: which wheel each MT6701 reads */
+#include "gear_config.h" /* EncoderRole: which wheel each MT6701 reads */
 
-#define MT6701_ANGLE_MAX 16383u
-#define MT6701_ENC_COUNT 4u /* encoders: 0,1 on SPI1; 2,3 on SPI2 */
+class Hal; /* platform backend, defined in hal.h; the MT6701 protocol only
+              needs the SPI/clock/delay surface at call time */
 
-/* CRC-6 (X^6+X+1) validation per datasheet Rev 1.8 SSI section;
- * set to 0 to accept frames without the CRC check. */
-#ifndef MT6701_CRC6_ENABLED
-#define MT6701_CRC6_ENABLED 1
+/* CRC-6 (X^6+X+1) validation per datasheet Rev 1.8 SSI section; kept as a
+ * preprocessor toggle (not a constexpr) so a build can override it with
+ * -DMt6701Crc6Enabled=0 (documented in the sim Makefile and AGENTS.md). */
+#ifndef Mt6701Crc6Enabled
+#define Mt6701Crc6Enabled 1
 #endif
 
-typedef struct
+struct Mt6701Sample
 {
-    uint16_t angle; /* 0..16383 */
-    bool     button; /* push-magnet state */
-} mt6701_sample_t;
+    uint16_t Angle;           /* 0..16383 */
+    bool     IsButtonPressed; /* push-magnet state */
+};
 
-/**
- * Read one angle frame with status validation and retries.
- * @param enc encoder role (ENC_SUN, ENC_GEAR_1..3)
- * @return 0 on success, -1 if the chip reports a fault (track loss / bad
- *         field status), -2 if no valid frame arrived within the retries.
- */
-int mt6701_read_sample(encoder_role_t enc, mt6701_sample_t *out);
+/** MT6701 SSI protocol layer; stateless, all calls are static. */
+class Mt6701
+{
+public:
+    static constexpr uint16_t AngleMax     = 16383u;
+    static constexpr uint16_t EncoderCount = 4u; /* 0,1 on SPI1; 2,3 on SPI2 */
 
-/** Raw 24-bit frame access without validation (diagnostics, tests). */
-int mt6701_read_frame(encoder_role_t enc, uint8_t frame[3]);
+    /**
+     * Read one angle frame with status validation and retries.
+     * @param hal     platform backend (SPI + clock + delay)
+     * @param encoder encoder role (Sun, Gear1..3)
+     * @param sample  receives the resolved angle and button state
+     * @return 0 on success, -1 if the chip reports a fault (track loss /
+     *         bad field status), -2 if no valid frame arrived in time.
+     */
+    static int ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample);
 
-/**
- * CRC-6 over the 18 data bits (angle + status), returned in the low 6 bits.
- * Polynomial X^6+X+1 (0x43), initial value 0, no final XOR, MSB first --
- * per datasheet Rev 1.8, SSI section.  Used when MT6701_CRC6_ENABLED is 1.
- */
-uint8_t mt6701_crc6_compute(const uint8_t frame[3]);
+    /** Raw 24-bit frame access without validation (diagnostics, tests). */
+    static int ReadFrame(Hal& hal, EncoderRole encoder, uint8_t frame[3]);
+
+    /**
+     * CRC-6 over the 18 data bits (angle + status), returned in the low
+     * 6 bits.  Polynomial X^6+X+1 (0x43), initial value 0, no final XOR,
+     * MSB first -- per datasheet Rev 1.8, SSI section.  Used when
+     * Mt6701Crc6Enabled is 1.
+     */
+    static uint8_t ComputeCrc6(const uint8_t frame[3]);
+
+private:
+    static constexpr int  MaxReadRetries         = 3;
+    static constexpr int  RetryDelayMicroseconds = 10;
+    static constexpr uint8_t Crc6Polynomial      = 0x43u;
+
+    static uint8_t UpdateCrc6(uint8_t crc, uint8_t frameByte, int bitCount);
+};
 
 #endif /* APP_MT6701_H */

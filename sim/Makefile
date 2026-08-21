@@ -1,22 +1,24 @@
-# PC test build for the encoder firmware logic.
+# PC test build for the encoder firmware logic (C++).
 # Run from this directory:  mingw32-make run   (or make run)
-# Links App/ logic against the simulated hardware instead of hal_stm32.c.
+# Links App/ logic against the simulated hardware instead of hal_stm32.cpp.
 
-CC    = gcc   # override on the command line if your gcc lives elsewhere
-CFLAGS = -std=c11 -Wall -Wextra -g -O0 -I../App
+CC    = g++   # override on the command line if your g++ lives elsewhere
+CFLAGS = -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+         -Wall -Wextra -g -O0 -I../App
 
 # Integration harness: App/ logic + simulated hardware.
-SRCS = sim_main.c hal_sim.c mt6701_slave_sim.c \
-       ../App/mt6701.c ../App/gear_decode.c ../App/i2c_pos.c
+SRCS = sim_main.cpp hal_sim.cpp mt6701_slave_sim.cpp \
+       ../App/mt6701.cpp ../App/gear_decode.cpp ../App/i2c_pos.cpp \
+       ../App/app_entry.cpp
 
 BIN = build/enc-sim
 
-# Unit test: the gear_decode public API only (no simulated hardware).
-SRCS_UNIT = test_gear_decode.c ../App/gear_decode.c
+# Unit test: the GearDecoder public API only (no simulated hardware).
+SRCS_UNIT = test_gear_decode.cpp ../App/gear_decode.cpp
 
 BIN_UNIT = build/test-gear-decode
 
-$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h mt6701_slave_sim.h
+$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h ../App/app_entry.h mt6701_slave_sim.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(SRCS) -o $@
 
