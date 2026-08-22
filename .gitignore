@@ -1,4 +1,5 @@
 # dot files
+/.clangd
 /.vscode/launch.json
 /.settings
 /.eide/log
