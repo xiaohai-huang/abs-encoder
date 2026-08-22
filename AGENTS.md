@@ -25,6 +25,7 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
 - `docs/architecture.md` — battery-free multi-turn design (coprime gear phase tracking: 13-tooth input gear driving 17/19/23-tooth gears, each with its own MT6701; 7,429-turn absolute range)
 - `docs/i2c.md` — I2C host port spec (slave address, register map, transactions)
 - `docs/i2c-host-guide.md` — host-side integration guide (wire walk-through, STM32 HAL example code)
+- `docs/pcb-design-guide.md` — hardware-side contract for the PCB (pin map/netlist, power, MT6701 circuit, gear-axis placement, routing, BOM, fab, bring-up over I2C)
 - `STM32F103XX_FLASH.ld` — linker script (custom scatter file referenced by `.eide/eide.yml`)
 - `startup_stm32f103xb.s` — startup assembly
 - `.eide/eide.yml` — Embedded IDE (EIDE) project: Debug and Release targets, toolchain and flash settings
