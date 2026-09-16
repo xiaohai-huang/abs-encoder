@@ -27,10 +27,10 @@
  * associated explicitly and cannot be reordered. */
 struct GearAngles
 {
-    uint16_t Sun;   /* Sun    -- input shaft, CSN4     */
-    uint16_t Gear1; /* Gear1  -- 17 teeth, CSN1        */
-    uint16_t Gear2; /* Gear2  -- 19 teeth, CSN2        */
-    uint16_t Gear3; /* Gear3  -- 23 teeth, CSN3        */
+    uint16_t Sun;   /* Sun    -- input shaft, CSN1     */
+    uint16_t Gear1; /* Gear1  -- 17 teeth, CSN2        */
+    uint16_t Gear2; /* Gear2  -- 19 teeth, CSN3        */
+    uint16_t Gear3; /* Gear3  -- 23 teeth, CSN4        */
 };
 
 struct GearPosition

@@ -22,10 +22,14 @@
  *
  *   role   wheel        teeth  CSN   bus
  *   -----  -----------  -----  ----  ----
- *   Sun    sun gear     13     CSN4  SPI2
- *   Gear1  driven gear  17     CSN1  SPI1
- *   Gear2  driven gear  19     CSN2  SPI1
- *   Gear3  driven gear  23     CSN3  SPI2
+ *   Sun    sun gear     13     CSN1  SPI1
+ *   Gear1  driven gear  17     CSN2  SPI1
+ *   Gear2  driven gear  19     CSN3  SPI2
+ *   Gear3  driven gear  23     CSN4  SPI2
+ *
+ * Note that no CSN number matches its gear number: CSN1 is the Sun and
+ * CSN2..CSN4 are Gear1..Gear3.  Bus grouping: Sun + Gear1 on SPI1,
+ * Gear2 + Gear3 on SPI2.
  */
 enum class EncoderRole
 {

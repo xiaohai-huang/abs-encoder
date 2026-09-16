@@ -13,7 +13,7 @@
  *
  * Every call is indexed by encoder role (EncoderRole in gear_config.h):
  * Sun is the input shaft, Gear1..3 the driven gears.  On this board
- * Gear1/2 share SPI1 (CSN1/CSN2) and Sun/Gear3 share SPI2 (CSN4/CSN3);
+ * Sun/Gear1 share SPI1 (CSN1/CSN2) and Gear2/Gear3 share SPI2 (CSN3/CSN4);
  * the role maps to bus and CS in the HAL backends (wiring table in
  * hal_stm32.cpp).  Only this file and the simulated chips
  * (sim/mt6701_slave_sim.cpp) know the frame format; everything else

@@ -20,8 +20,9 @@ document.
    tree is not optional.
 2. **Four MT6701** wired exactly per the table below.  The role ↔ CSN ↔
    bus assignment is baked into `hal_stm32.cpp`; a board that swaps two
-   sensors decodes garbage that looks plausible.  **Note the
-   non-monotonic mapping: the Sun encoder is CSN4, not CSN1.**
+   sensors decodes garbage that looks plausible.  **Note the offset
+   mapping: CSN1 is the Sun and CSN2..CSN4 are Gear1..Gear3 — no CSN
+   number matches its gear number.**
 3. **I2C slave port on PB6/PB7**, open-drain, **external pull-ups
    mandatory** — the firmware does not enable the STM32's internal pulls.
 4. **CSN pins idle HIGH** (the `.ioc` initializes them high and
@@ -109,15 +110,15 @@ import the symbol — typos here are the #1 cause of a dead first board.
 
 | Pin | # | Net | Role |
 | :--- | :--- | :--- | :--- |
-| PA3 | 13 | `CSN1` | Encoder CS, active low — **Gear1 (17 T, driven)**, SPI1 |
-| PA4 | 14 | `CSN2` | Encoder CS, active low — **Gear2 (19 T, driven)**, SPI1 |
-| PA5 | 15 | `SPI1_SCK` | Bus 1 clock → MT6701 pin B (pin 7) of Gear1+Gear2 |
-| PA6 | 16 | `SPI1_MISO` | Bus 1 data ← MT6701 pin A (pin 6) of Gear1+Gear2 |
+| PA3 | 13 | `CSN2` | Encoder CS, active low — **Gear1 (17 T, driven)**, SPI1 |
+| PA4 | 14 | `CSN1` | Encoder CS, active low — **Sun (13 T, input shaft)**, SPI1 |
+| PA5 | 15 | `SPI1_SCK` | Bus 1 clock → MT6701 pin B (pin 7) of Sun+Gear1 |
+| PA6 | 16 | `SPI1_MISO` | Bus 1 data ← MT6701 pin A (pin 6) of Sun+Gear1 |
 | PA7 | 17 | `SPI1_MOSI` | Configured in firmware, **not connected to the chips** (SSI is read-only; dummy bytes are sent). Route nowhere, or leave the net MCU-local. |
-| PA8 | 29 | `CSN4` | Encoder CS, active low — **Sun (13 T, input shaft)**, SPI2 ⚠️ not Gear4 |
-| PA9 | 30 | `CSN3` | Encoder CS, active low — **Gear3 (23 T, driven)**, SPI2 |
-| PB13 | 26 | `SPI2_SCK` | Bus 2 clock → Sun + Gear3 pin B |
-| PB14 | 27 | `SPI2_MISO` | Bus 2 data ← Sun + Gear3 pin A |
+| PA9 | 30 | `CSN3` | Encoder CS, active low — **Gear2 (19 T, driven)**, SPI2 |
+| PB12 | 25 | `CSN4` | Encoder CS, active low — **Gear3 (23 T, driven)**, SPI2 ⚠️ not Gear4 |
+| PB13 | 26 | `SPI2_SCK` | Bus 2 clock → Gear2 + Gear3 pin B |
+| PB14 | 27 | `SPI2_MISO` | Bus 2 data ← Gear2 + Gear3 pin A |
 | PB15 | 28 | `SPI2_MOSI` | Unused, as PA7 |
 | PB6 | 42 | `I2C1_SCL` | Open-drain, **external pull-up required** |
 | PB7 | 43 | `I2C1_SDA` | Open-drain, **external pull-up required** |
@@ -180,10 +181,10 @@ center must sit under its gear's rotation axis, magnet concentric within
 
    | Sensor position | Silkscreen |
    | :--- | :--- |
-   | Sun gear axis | `SUN / CSN4 / 13T` |
-   | 17 T gear axis | `G1 / CSN1 / 17T` |
-   | 19 T gear axis | `G2 / CSN2 / 19T` |
-   | 23 T gear axis | `G3 / CSN3 / 23T` |
+   | Sun gear axis | `SUN / CSN1 / 13T` |
+   | 17 T gear axis | `G1 / CSN2 / 17T` |
+   | 19 T gear axis | `G2 / CSN3 / 19T` |
+   | 23 T gear axis | `G3 / CSN4 / 23T` |
 
 3. Magnet per encoder: **Ø6 mm × 2.5 mm, diametrically magnetized**, on
    the gear/shaft end face, air gap 0.5–2 mm above the die.  Put the
@@ -270,7 +271,7 @@ boards that sleep or misbehave.
 **BOOT0**: pull down 100 kΩ.  A 2-pin jumper to 3V3 selects the system
 bootloader as a last-resort recovery path — note the F103 ROM bootloader
 speaks USART1 on PA9/PA10, and **PA9 is CSN3**; boot-loader traffic will
-harmlessly clock the Gear3 encoder.  Recovery-only; not part of normal
+harmlessly clock the Gear2 encoder.  Recovery-only; not part of normal
 operation.
 
 **Recommended test points**: `3V3`, `GND`, and one per CSN (4) — with a
@@ -341,8 +342,8 @@ The I2C register map is the board's built-in test bench
 
 ## 11. Final review checklist
 
-- [ ] Sensor die centers at the four gear axes; crosshairs + role/CSN/teeth silkscreen at each (`SUN/CSN4/13T` — the Sun trap)
-- [ ] CSN1→G1, CSN2→G2, CSN3→G3, CSN4→Sun; per-bus SCK/MISO shared correctly
+- [ ] Sensor die centers at the four gear axes; crosshairs + role/CSN/teeth silkscreen at each (`SUN/CSN1/13T` — CSN is offset one from the gear number)
+- [ ] CSN1→Sun, CSN2→G1, CSN3→G2, CSN4→G3; per-bus SCK/MISO shared correctly
 - [ ] 10 kΩ on every CSN; 100 nF at every MT6701 VDD; MODE tied high; OUT/PUSH floating
 - [ ] MOSI not routed to the encoders
 - [ ] I2C pull-ups fitted on the host PCB (to host 3V3); this board's pull-up footprints left DNP; no 0x50 conflict on the host bus

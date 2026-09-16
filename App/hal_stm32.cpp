@@ -20,10 +20,10 @@
  * gearbox changes.  The labels come from the CubeMX User Labels (main.h)
  * and the rows must match the physical board:
  *
- *   Sun    <- CSN4 on SPI2
- *   Gear1  <- CSN1 on SPI1
- *   Gear2  <- CSN2 on SPI1
- *   Gear3  <- CSN3 on SPI2
+ *   Sun    <- CSN1 on SPI1
+ *   Gear1  <- CSN2 on SPI1
+ *   Gear2  <- CSN3 on SPI2
+ *   Gear3  <- CSN4 on SPI2
  *
  * The table is positional: EncoderRole order Sun, Gear1, Gear2, Gear3. */
 struct EncoderWiring
@@ -35,10 +35,10 @@ struct EncoderWiring
 
 static const EncoderWiring _encoderWiring[static_cast<size_t>(
     EncoderRole::RoleCount)] = {
-    {CSN4_GPIO_Port, CSN4_Pin, &hspi2}, /* Sun   */
-    {CSN1_GPIO_Port, CSN1_Pin, &hspi1}, /* Gear1 */
-    {CSN2_GPIO_Port, CSN2_Pin, &hspi1}, /* Gear2 */
-    {CSN3_GPIO_Port, CSN3_Pin, &hspi2}, /* Gear3 */
+    {CSN1_GPIO_Port, CSN1_Pin, &hspi1}, /* Sun   */
+    {CSN2_GPIO_Port, CSN2_Pin, &hspi1}, /* Gear1 */
+    {CSN3_GPIO_Port, CSN3_Pin, &hspi2}, /* Gear2 */
+    {CSN4_GPIO_Port, CSN4_Pin, &hspi2}, /* Gear3 */
 };
 
 /* I2C1 slave transport for the position register map (docs/i2c.md): the
