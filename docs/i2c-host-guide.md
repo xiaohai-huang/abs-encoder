@@ -15,6 +15,9 @@ spec and its numbers are normative.
   a slow master or long SCL low is fine.  Both sides can move to 400 kHz
   (on the firmware side that is a CubeMX-only change, `docs/i2c.md`).
 - SCL/SDA are open-drain: the bus needs external pull-ups to 3.3 V.
+  In this system the two pull-ups (2 × 4.7 kΩ at 100 kHz) are fitted on
+  the **host** PCB, to the host's 3.3 V rail — the encoder board ships
+  with its pull-up footprints unpopulated (`docs/pcb-design-guide.md` §6).
 
 ## Register map (8 bytes)
 
