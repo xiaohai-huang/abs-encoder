@@ -7,7 +7,7 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
 - `Core/` — application code (CubeMX-generated `main.c`, `spi.c`, `i2c.c`, `tim.c`, `gpio.c`, IT/MSP files)
 - `App/` — hand-written C++11 application logic (classes + `constexpr`; compiled with `-fno-exceptions -fno-rtti -fno-threadsafe-statics`), split by hardware dependency:
   - `hal.h` — the only interface the logic depends on: `class Hal` (virtual SPI byte exchange + CS, µs clock, busy-wait delay) and `extern Hal& hal` (the backend instance) — grblHAL-style HAL
-  - `mt6701.h/.cpp` — MT6701 SSI protocol layer (`class Mt6701`, stateless): 24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`; toggle with `Mt6701Crc6Enabled`). All calls are indexed by `EncoderRole` — `Sun` is the input shaft, `Gear1..3` the driven gears (wiring: Gear1/2 on SPI1 via CSN1/CSN2, Sun/Gear3 on SPI2 via CSN4/CSN3 — the `_encoderWiring` table in `hal_stm32.cpp`)
+  - `mt6701.h/.cpp` — MT6701 SSI protocol layer (`class Mt6701`, stateless): 24-bit frame decode, status validation, retries; CRC-6 validation, X^6+X+1 per datasheet §7.8.2 — see `docs/MT6701.md`). All calls are indexed by `EncoderRole` — `Sun` is the input shaft, `Gear1..3` the driven gears (wiring: Gear1/2 on SPI1 via CSN1/CSN2, Sun/Gear3 on SPI2 via CSN4/CSN3 — the `_encoderWiring` table in `hal_stm32.cpp`)
   - `gear_config.h` — compile-time mechanical config: `enum class EncoderRole` plus the `GearConfig` `constexpr` namespace (input + driven tooth counts, turn-field width, slew limit); changing gears = edit this header, rebuild, reflash
   - `gear_decode.h/.cpp` — absolute multi-turn decode (`class GearDecoder`): the constructor validates the geometry, per-sample CRT over the three gear residues, slew-guarded (jumps > `GearConfig::MaxTurnsDelta` rejected as misreads, last position held). No storage; the only state is the last accepted turn count
   - `i2c_pos.h/.cpp` — I2C slave host port (`class PositionRegister`, shared `positionRegister` instance): the decoded position as one combined 27-bit count (`turns·16384 + angle`), a one-byte status (bit0 = valid, bits 1..4 = per-encoder read health) and a 16-bit sample counter; pure logic (no HAL). The snapshot is packed into one 32-bit word so an address-match read can never tear; wire protocol in `docs/i2c.md`
@@ -51,7 +51,7 @@ cd sim && make run        # MinGW gcc; WinLibs installed via winget lives in
                           # %LOCALAPPDATA%\Microsoft\WinGet\Packages\...\mingw64\bin
 ```
 
-Exit code 0 = all checks pass. CRC-6 validation is on by default; to test the no-CRC path: `make run CFLAGS="-std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wall -Wextra -g -O0 -I../App -DMt6701Crc6Enabled=0"`.
+Exit code 0 = all checks pass. CRC-6 validation is always on.
 
 ## CubeMX regeneration rules
 

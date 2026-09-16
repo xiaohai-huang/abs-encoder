@@ -58,13 +58,11 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
                        (static_cast<uint32_t>(frame[1]) << BitsInByte) |
                        static_cast<uint32_t>(frame[2]);
 
-#if Mt6701Crc6Enabled
         if (ComputeCrc6(frame) != static_cast<uint8_t>(raw & CrcFieldMask))
         {
             hal.DelayMicroseconds(RetryDelayMicroseconds);
             continue;
         }
-#endif
 
         uint16_t angle = static_cast<uint16_t>(
             (raw >> AngleFieldShift) & AngleFieldMask);

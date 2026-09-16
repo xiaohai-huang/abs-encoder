@@ -29,13 +29,6 @@
 class Hal; /* platform backend, defined in hal.h; the MT6701 protocol only
               needs the SPI/clock/delay surface at call time */
 
-/* CRC-6 (X^6+X+1) validation per datasheet Rev 1.8 SSI section; kept as a
- * preprocessor toggle (not a constexpr) so a build can override it with
- * -DMt6701Crc6Enabled=0 (documented in the sim Makefile and AGENTS.md). */
-#ifndef Mt6701Crc6Enabled
-#define Mt6701Crc6Enabled 1
-#endif
-
 struct Mt6701Sample
 {
     uint16_t Angle; /* 0..16383 */
@@ -65,8 +58,8 @@ public:
     /**
      * CRC-6 over the 18 data bits (angle + status), returned in the low
      * 6 bits.  Polynomial X^6+X+1 (0x43), initial value 0, no final XOR,
-     * MSB first -- per datasheet Rev 1.8, SSI section.  Used when
-     * Mt6701Crc6Enabled is 1.
+     * MSB first -- per datasheet Rev 1.8, SSI section, and confirmed against
+     * real silicon (docs/MT6701.md).  Every frame is validated with it.
      */
     static uint8_t ComputeCrc6(const uint8_t frame[3]);
 

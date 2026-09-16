@@ -92,24 +92,15 @@ static void TestFaults()
     Mt6701SlaveSim::SetFieldStatus(EncoderRole::Sun, 0u);
 
     Mt6701SlaveSim::SetStuck(EncoderRole::Sun, true);
-#if Mt6701Crc6Enabled
     /* 0xFF fails the CRC-6 check */
     CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == -2);
-#else
-    /* 0xFF decodes as track loss */
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == -1);
-#endif
     Mt6701SlaveSim::SetStuck(EncoderRole::Sun, false);
 
     CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == 0); /* recovered */
 
     /* same fault path on the second bus */
     Mt6701SlaveSim::SetStuck(EncoderRole::Gear3, true);
-#if Mt6701Crc6Enabled
     CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == -2);
-#else
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == -1);
-#endif
     Mt6701SlaveSim::SetStuck(EncoderRole::Gear3, false);
     CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == 0);
 }
@@ -120,13 +111,8 @@ static void TestCrc()
     Mt6701SlaveSim::SetAngle(EncoderRole::Gear1, 0x1234u);
     Mt6701SlaveSim::SetCrcBroken(EncoderRole::Gear1, true);
     Mt6701Sample sample;
-#if Mt6701Crc6Enabled
     /* all retries fail the CRC */
     CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == -2);
-#else
-    /* CRC check disabled (default) */
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == 0);
-#endif
     Mt6701SlaveSim::SetCrcBroken(EncoderRole::Gear1, false);
 }
 
