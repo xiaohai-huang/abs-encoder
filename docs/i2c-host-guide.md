@@ -32,6 +32,16 @@ angle 0..16383 from the input shaft.  The count is continuous across the
 turn boundary and **absolute** — no homing, no calibration table, and it
 survives power loss of the encoder.
 
+In resolution terms this is a **27-bit absolute encoder over a 7,429-turn
+range**: the turn field is 13 bits (7,429 states in an 8,192-code field)
+and the fine angle is 14 bits (16,384 counts per turn, ≈ 0.022° per
+count); 13 + 14 is the 27 bits of the count above.  Those 7,429 turns
+are a **modulo** range, not a limit the firmware enforces: past turn
+7,428 the decode aliases back to 0, and because the gear phases are the
+only memory the aliased reading is a perfectly valid sample.  A
+mechanical end-stop is assumed — a host that must track more than 7,429
+turns has to detect the wrap itself.
+
 The status byte carries the whole sample verdict in one register: it
 reads exactly `0x01` when the last sample was **fresh and accepted**;
 bits 1..4 name any encoder whose read failed — bit1 = Sun, bit2 = Gear1,
@@ -180,7 +190,9 @@ void PollEncoder(void)
          *   turns    = snap.Position / 16384u
          *   angle    = snap.Position % 16384u
          *   degrees  = snap.Position * 360.0f / 16384.0f
-         *   (fixed point: degrees*100 = snap.Position * 36000u / 16384u) */
+         *   (fixed point: degrees*100 = (uint64_t)snap.Position * 36000u /
+         *    16384u; without the widening cast the product overflows
+         *    uint32 above ~119,000 counts) */
         /* ...run your application on the certified position... */
     }
     else if ((snap.Status & ENC_STATUS_HEALTH_MASK) != 0u)
