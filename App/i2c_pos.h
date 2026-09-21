@@ -15,6 +15,7 @@
 #include <cstdint>
 
 #include "mt6701.h" /* Mt6701::AngleMax */
+#include "gear_config.h" /* GearConfig::TurnRange */
 #include "gear_decode.h" /* GearPosition */
 
 /** The I2C slave register map of the absolute position. */
@@ -27,7 +28,7 @@ public:
     static constexpr uint8_t Address = 0x50u;
 
     /* Register map (read-only, little-endian on the wire):
-     *   0x00..0x03  absolute position count, uint32 LE, 0 .. 121,716,735
+     *   0x00..0x03  absolute position count, uint32 LE, 0 .. MaxPosition
      *               (turns * CountsPerTurn + angle; the turn field 0..7428
      *               is 13 bits and the 14-bit fine angle makes the combined
      *               value a 27-bit integer, so it fits one uint32 and
@@ -39,14 +40,37 @@ public:
      *               bits 1..4 name any encoder whose read failed on the
      *               last sample (bit1 = Sun .. bit4 = Gear3)
      *   0x05..0x06  sample counter, uint16 LE: +1 per sample (wraps); a
-     *               polling host sees sampling is alive when it changes */
-    static constexpr uint8_t RegisterStatus  = 0x04u;
-    static constexpr uint8_t RegisterCounter = 0x05u;
-    static constexpr uint8_t RegisterCount   = 7u;
+     *               polling host sees sampling is alive when it changes
+     *   0x07..0x0A  full-scale count, uint32 LE: the constant MaxPosition,
+     *               so a host scales positions against the range this
+     *               build actually has instead of a copied number */
+    static constexpr uint8_t RegisterStatus      = 0x04u;
+    static constexpr uint8_t RegisterCounter     = 0x05u;
+    static constexpr uint8_t RegisterMaxPosition = 0x07u;
+    /** One past the last byte of the map (the max register is 4 bytes). */
+    static constexpr uint8_t RegisterCount = RegisterMaxPosition + 4u;
+
+    /* The map tiles 0x00..RegisterCount-1 with no gap and no overlap:
+     * 4 bytes of position, 1 of status, 2 of counter, 4 of max.  Read()
+     * serves it as one row per range, so this is what makes every valid
+     * register pointer land in exactly one row. */
+    static_assert(RegisterStatus == 4u &&
+                      RegisterCounter == RegisterStatus + 1u &&
+                      RegisterMaxPosition == RegisterCounter + 2u &&
+                      RegisterCount == RegisterMaxPosition + 4u,
+                  "register map must tile: pos 0x00..0x03, status 0x04, "
+                  "seq 0x05..0x06, max 0x07..0x0A");
 
     /** Fine-angle steps per whole turn (Mt6701::AngleMax + 1).  The
      *  combined count the map exports is turns * this + angle. */
     static constexpr uint32_t CountsPerTurn = Mt6701::AngleMax + 1u;
+
+    /** Largest count the map can report: the whole turn range at full
+     *  fine-angle resolution, i.e. TurnRange turns of 0 .. AngleMax
+     *  (7429 * 16384 - 1 = 121,716,735).  Derived from the geometry, so
+     *  a gear_config.h change moves the exported range with it. */
+    static constexpr uint32_t MaxPosition =
+        static_cast<uint32_t>(GearConfig::TurnRange) * CountsPerTurn - 1u;
 
     /** The status register reads exactly this when the sample is
      *  certified; anything else means a read failed (bits 1..4) or the

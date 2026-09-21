@@ -19,13 +19,14 @@ spec and its numbers are normative.
   the **host** PCB, to the host's 3.3 V rail — the encoder board ships
   with its pull-up footprints unpopulated (`docs/pcb-design-guide.md` §6).
 
-## Register map (8 bytes)
+## Register map (11 bytes)
 
 | reg        | name   | meaning                                                       |
 |------------|--------|---------------------------------------------------------------|
 | 0x00..0x03 | pos    | absolute position count, uint32 LE, 0 .. 121,716,735          |
 | 0x04       | status | one-byte verdict: bit0 = `valid`; bits 1..4 = read health     |
 | 0x05..0x06 | seq    | sample counter, uint16 LE, +1 per 1 ms sample, wraps          |
+| 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735         |
 
 Position is `turns * 16384 + angle`: turns 0..7428 from the gear phases,
 angle 0..16383 from the input shaft.  The count is continuous across the
@@ -48,9 +49,17 @@ bits 1..4 name any encoder whose read failed — bit1 = Sun, bit2 = Gear1,
 bit3 = Gear2, bit4 = Gear3; `0x00` means all reads were clean but the
 slew guard rejected the decode.
 
-Reading it is always three steps: write the register pointer (`0x00`),
-read 7 bytes back (one combined transaction, or two separate ones — the
-pointer persists), interpret.
+The last register is the **full-scale count**: the same value the extreme
+sample reports (`7428 * 16384 + 16383 = 121,716,735`), exported as a
+constant so you scale positions against the device's own range instead of
+a number copied into your firmware.  Read it once at startup — it needs
+no polling, never changes with the shaft, and reads the same before the
+first sample and while an encoder is faulted.
+
+Reading it is always three steps: write the register pointer you want
+(`0x00` for the snapshot, `0x07` for the full-scale count), read the
+bytes back (one combined transaction, or two separate ones — the pointer
+persists), interpret.
 
 ## Trust rules (read before writing code)
 
@@ -112,7 +121,12 @@ extern I2C_HandleTypeDef hi2c2; /* your master peripheral (CubeMX) */
 
 #define ENC_REG_STATUS 0x04u
 #define ENC_REG_SEQ    0x05u
-#define ENC_FRAME_LEN  7u
+#define ENC_REG_MAX_POSITION 0x07u
+
+/* the polling snapshot: position + status + seq.  The full map is 11
+ * bytes (the full-scale count follows the counter at 0x07); a poll does
+ * not need it, because it never changes */
+#define ENC_FRAME_LEN 7u
 
 #define ENC_STATUS_VALID 0x01u /* bit0: sample fresh and accepted */
 
@@ -151,6 +165,26 @@ HAL_StatusTypeDef EncoderReadSnapshot(I2C_HandleTypeDef* hi2c,
     out->Status = frame[ENC_REG_STATUS];
     out->Seq = (uint16_t)((uint16_t)frame[ENC_REG_SEQ] |
                           ((uint16_t)frame[ENC_REG_SEQ + 1u] << 8u));
+    return HAL_OK;
+}
+
+/* The full-scale count: the same number the extreme position reports.
+ * Read once at startup with a 4-byte read at pointer 0x07 -- unlike the
+ * snapshot there is nothing to validate, it never changes. */
+HAL_StatusTypeDef EncoderReadMaxPosition(I2C_HandleTypeDef* hi2c,
+                                         uint32_t* out)
+{
+    uint8_t frame[4];
+
+    if (HAL_I2C_Mem_Read(hi2c, ENC_ADDR, ENC_REG_MAX_POSITION,
+                         I2C_MEMADD_SIZE_8BIT, frame, sizeof(frame),
+                         100u) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+    *out = (uint32_t)frame[0] | ((uint32_t)frame[1] << 8u) |
+           ((uint32_t)frame[2] << 16u) | ((uint32_t)frame[3] << 24u);
     return HAL_OK;
 }
 ```
@@ -192,7 +226,10 @@ void PollEncoder(void)
          *   degrees  = snap.Position * 360.0f / 16384.0f
          *   (fixed point: degrees*100 = (uint64_t)snap.Position * 36000u /
          *    16384u; without the widening cast the product overflows
-         *    uint32 above ~119,000 counts) */
+         *    uint32 above ~119,000 counts)
+         *   percent of full travel: (uint64_t)snap.Position * 100u /
+         *    MaxPosition -- MaxPosition is what EncoderReadMaxPosition()
+         *    returned at startup; widen here too) */
         /* ...run your application on the certified position... */
     }
     else if ((snap.Status & ENC_STATUS_HEALTH_MASK) != 0u)
@@ -213,8 +250,10 @@ void PollEncoder(void)
 ## Practical notes
 
 - **Partial reads are fine**: 4 bytes = position only, 5 = position +
-  status.  Reading less than the full map never disturbs later reads
-  (the pointer advances, never wraps; past the map everything reads 0).
+  status, 11 = the whole map.  Reading less than the full map never
+  disturbs later reads (the pointer advances, never wraps; past the map
+  everything reads 0).  The full-scale count is a 4-byte read at pointer
+  `0x07` on its own, which a poll never needs.
 - **Two transactions instead of one** also work — write the pointer, then
   read: `HAL_I2C_Master_Transmit(&hi2c2, ENC_ADDR, (uint8_t[]){0x00}, 1u,
   timeout)` followed by `HAL_I2C_Master_Receive(&hi2c2, ENC_ADDR, frame,

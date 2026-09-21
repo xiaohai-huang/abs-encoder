@@ -30,6 +30,7 @@ All registers are read-only, little-endian on the wire:
 | 0x00..0x03 | pos    | absolute position count, uint32 LE, 0 .. 121,716,735           |
 | 0x04       | status | one-byte verdict: bit0 = `valid`; bits 1..4 = read health      |
 | 0x05..0x06 | seq    | sample counter, uint16 LE: +1 per sample, wraps                |
+| 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735          |
 
 The status byte carries the whole sample verdict in one register: it
 reads exactly `0x01` when the last sample was **fresh and accepted** (all
@@ -45,6 +46,15 @@ gear phases and `angle` (0 .. 16383) is the 14-bit fine angle within the
 turn.  The combined value is a 27-bit integer that counts continuously
 across the turn boundary — it never jumps at the seam.
 
+The `max` register is the full-scale count of this build: the value a
+maximally wound shaft reports, which is the same number as the extreme
+sample (`7428 * 16384 + 16383 = 121,716,735`).  It is served as a
+constant so a host scales positions against the device's real range
+instead of a number copied into its own source; it changes only if the
+gear geometry (`App/gear_config.h`) changes, it is unaffected by any
+sample, and it reads the same before the first sample and during a
+fault.
+
 Conversions, on the host:
 
 ```
@@ -52,25 +62,30 @@ counts  = turns * 16384 + angle
 turns   = counts / 16384
 angle   = counts % 16384
 degrees = counts * 360 / 16384
+
+percent = counts * 100 / max    <- widen to 64-bit first: counts * 100
+                                   overflows uint32 above ~42.9 M counts
 ```
 
 ## Transactions (EEPROM-style)
 
-- **Write** (1 byte): sets the register pointer (`0x00`..`0x06`; anything
+- **Write** (1 byte): sets the register pointer (`0x00`..`0x0A`; anything
   past the map clamps to it, reads then return 0x00).
 - **Read**: serves bytes starting at the register pointer and
-  auto-increments; once past 0x06 every byte reads 0x00 (no wrap).
+  auto-increments; once past 0x0A every byte reads 0x00 (no wrap).
 
 Read the whole snapshot with a combined transaction:
 
 ```
 write 0xA0, byte 0x00,    <- register pointer
 (repeated start)
-read  0xA1, 7 bytes       <- position (4) + status + seq (2)
+read  0xA1, 11 bytes      <- position (4) + status + seq (2) + max (4)
 ```
 
 Common patterns: 4 bytes = position only; 5 bytes = position + status;
-7 bytes = the full snapshot.
+7 bytes = position + status + seq; 11 bytes = the whole map.  The
+full-scale count on its own is 4 bytes from pointer `0x07`, which is how
+a host reads it once at startup.
 Writing the pointer and reading it in two separate transactions works too.
 A master that stops early (e.g. reads 1 byte after selecting 0x00) is
 harmless — the slave re-arms at the end of the transaction.

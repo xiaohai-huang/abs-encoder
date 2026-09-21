@@ -30,6 +30,11 @@ static int _failedChecks = 0;
         }                                                                    \
     } while (0)
 
+/* Bytes 0x07..0x0A of every full-map read: the constant full-scale count
+ * 7429 * 16384 - 1 = 121,716,735 = 0x07413FFF, little-endian
+ * (PositionRegister::MaxPosition, docs/i2c.md). */
+#define EXPECTED_MAX_REG_BYTES 0xFFu, 0x3Fu, 0x41u, 0x07u
+
 static void TestStaticAngle()
 {
     std::printf("static angle reads (encoders 0, 1, 3)\n");
@@ -171,7 +176,8 @@ static void TestI2cPosition()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedOrigin[] = {
         0u, 0u, 0u, 0u, PositionRegister::StatusValid,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedOrigin, sizeof(bytes)) == 0);
 
     /* one whole turn is exactly CountsPerTurn (0x4000), not trailing
@@ -185,7 +191,8 @@ static void TestI2cPosition()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedOneTurn[] = {
         0x00u, 0x40u, 0x00u, 0x00u, PositionRegister::StatusValid,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedOneTurn, sizeof(bytes)) == 0);
 
     /* the extreme position is one continuous 27-bit count:
@@ -199,8 +206,17 @@ static void TestI2cPosition()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedExtreme[] = {
         0xFFu, 0x3Fu, 0x41u, 0x07u, PositionRegister::StatusValid,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedExtreme, sizeof(bytes)) == 0);
+
+    /* ...which is exactly the exported full-scale value: the extreme
+     * sample and the max register are the same number by construction,
+     * so a host scaling by the register can never clamp a real sample */
+    CHECK(PositionRegister::MaxPosition ==
+          (uint32_t)(GearConfig::TurnRange - 1u) *
+                  PositionRegister::CountsPerTurn +
+              Mt6701::AngleMax);
 
     /* a slew-guard rejection: all reads clean, status = 0x00; position
      * 1234 turns + 0x1234 angle = 20,222,516 = 0x01349234 */
@@ -213,7 +229,8 @@ static void TestI2cPosition()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedRejected[] = {
         0x34u, 0x92u, 0x34u, 0x01u, 0x00u,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedRejected, sizeof(bytes)) == 0);
 
     /* failed reads on Sun + Gear3: the health bits ride in the same
@@ -230,10 +247,13 @@ static void TestI2cPosition()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedFaulty[] = {
         0x34u, 0x92u, 0x34u, 0x01u, 0x12u,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedFaulty, sizeof(bytes)) == 0);
 
-    /* auto-increment across separate read calls, one byte at a time */
+    /* auto-increment across separate read calls, one byte at a time --
+     * the whole map: position tail, status, counter, the constant max
+     * register, then zero-fill past the map */
     positionRegister.Select(2u);
     CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x34u);
     CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x01u);
@@ -242,8 +262,19 @@ static void TestI2cPosition()
           bytes[0] == (uint8_t)(expectedCounter & 0xFFu)); /* seq lo */
     CHECK(positionRegister.Read(bytes, 1u) == 1u &&
           bytes[0] == (uint8_t)(expectedCounter >> 8u)); /* seq hi */
+    CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0xFFu);
+    CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x3Fu);
+    CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x41u);
+    CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x07u);
     CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0u); /* past map */
     CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0u); /* stays 0 */
+
+    /* the max register reads standalone too: a host scales its positions
+     * with one 4-byte read at pointer 0x07, without the rest of the map */
+    positionRegister.Select(PositionRegister::RegisterMaxPosition);
+    CHECK(positionRegister.Read(bytes, 4u) == 4u);
+    const uint8_t expectedMaxOnly[] = {EXPECTED_MAX_REG_BYTES};
+    CHECK(std::memcmp(bytes, expectedMaxOnly, 4u) == 0);
 
     /* a pointer past the map reads zeros too */
     positionRegister.Select(0xFFu);
@@ -299,7 +330,8 @@ static void TestAppSampleLoop()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedHealthy[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, PositionRegister::StatusValid,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedHealthy, sizeof(bytes)) == 0);
 
     /* sample 2: sun read fails (track loss): status = bit1 (0x02), valid
@@ -312,7 +344,8 @@ static void TestAppSampleLoop()
     const uint8_t expectedSunFault[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u,
         PositionRegister::HealthBit(EncoderRole::Sun),
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedSunFault, sizeof(bytes)) == 0);
     Mt6701SlaveSim::SetTrackLoss(EncoderRole::Sun, false);
 
@@ -329,7 +362,8 @@ static void TestAppSampleLoop()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedAllDead[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, 0x1Eu,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedAllDead, sizeof(bytes)) == 0);
     Mt6701SlaveSim::SetStuck(EncoderRole::Sun, false);
     Mt6701SlaveSim::SetStuck(EncoderRole::Gear1, false);
@@ -343,7 +377,8 @@ static void TestAppSampleLoop()
     CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
     const uint8_t expectedRecovered[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, PositionRegister::StatusValid,
-        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u)};
+        (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
+        EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedRecovered, sizeof(bytes)) == 0);
 }
 

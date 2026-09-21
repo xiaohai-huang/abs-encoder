@@ -10,7 +10,9 @@
  * sample loop writes the snapshot with a single aligned store and the
  * transport copies it with a single aligned load at address-match time,
  * so a host read can never observe a torn position even though the
- * sample updates at 1 kHz.
+ * sample updates at 1 kHz.  The map ends with the constant full-scale
+ * count (MaxPosition, register 0x07), which a host reads once to scale
+ * positions against the range this build actually has.
  */
 #include "i2c_pos.h"
 
@@ -55,42 +57,63 @@ void PositionRegister::Select(uint8_t registerIndex)
         (registerIndex < RegisterCount) ? registerIndex : RegisterCount;
 }
 
+/* One row of the register map: the register pointer it starts at, its
+ * width in bytes, and the value it serves.  This table *is* the map --
+ * Read() matches the cursor against the rows, so there is no per-register
+ * branch to keep in step with the layout (the static_assert in i2c_pos.h
+ * guarantees the rows tile the whole map). */
+struct RegisterRow
+{
+    uint8_t  base;
+    uint8_t  size;
+    uint32_t value;
+};
+
+/* Byte `offset` of a little-endian register value. */
+static uint8_t ByteOf(uint32_t value, uint8_t offset)
+{
+    return static_cast<uint8_t>(value >> (8u * offset));
+}
+
 uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
 {
-    /* one load per field: every byte of a transaction comes from the same
-       snapshot and status state (position is a single 32-bit load, so its
-       four bytes can never tear) */
-    uint32_t snapshot = _positionSnapshot;
-    uint8_t  status   = _statusByte;
-    uint16_t counter  = _sampleCounter;
+    /* One capture per transaction: every byte below is served from these
+       locals, never from the live fields, so position is read as a single
+       32-bit load and its four bytes can never tear even though the sample
+       loop refreshes it at 1 kHz. */
+    const uint32_t position = _positionSnapshot;
+    const uint8_t  status   = _statusByte;
+    const uint16_t counter  = _sampleCounter;
+
+    const RegisterRow rows[] = {
+        {0x00u, 4u, position},
+        {RegisterStatus, 1u, status},
+        {RegisterCounter, 2u, counter},
+        {RegisterMaxPosition, 4u, MaxPosition},
+    };
+    const uint8_t rowCount =
+        static_cast<uint8_t>(sizeof(rows) / sizeof(rows[0]));
 
     uint8_t index = 0u;
     while (index < maxBytes)
     {
+        uint8_t byte = 0u; /* past the map: zero-fill, never wraps */
         if (_registerCursor < RegisterCount)
         {
-            uint8_t registerIndex = _registerCursor++;
-            if (registerIndex == RegisterStatus)
+            /* serve the byte of the row whose range covers the cursor */
+            for (uint8_t row = 0u; row < rowCount; row++)
             {
-                destination[index] = status;
+                const uint8_t base = rows[row].base;
+                if (_registerCursor >= base &&
+                    _registerCursor < (uint8_t)(base + rows[row].size))
+                {
+                    byte = ByteOf(rows[row].value, _registerCursor - base);
+                    break;
+                }
             }
-            else if (registerIndex >= RegisterCounter)
-            {
-                destination[index] =
-                    static_cast<uint8_t>((counter >> (8u * (registerIndex -
-                                                            RegisterCounter))) &
-                                         0xFFu);
-            }
-            else
-            {
-                destination[index] =
-                    static_cast<uint8_t>(snapshot >> (8u * registerIndex));
-            }
+            _registerCursor++;
         }
-        else
-        {
-            destination[index] = 0u; /* past the map: zero-fill, never wraps */
-        }
+        destination[index] = byte;
         index++;
     }
     return index;
