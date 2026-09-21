@@ -123,9 +123,14 @@ extern I2C_HandleTypeDef hi2c2; /* your master peripheral (CubeMX) */
 #define ENC_REG_SEQ    0x05u
 #define ENC_REG_MAX_POSITION 0x07u
 
-/* the polling snapshot: position + status + seq.  The full map is 11
- * bytes (the full-scale count follows the counter at 0x07); a poll does
- * not need it, because it never changes */
+/* the polling snapshot: position + status + seq, in ONE transaction --
+ * a transaction copies one snapshot, so the three always describe the
+ * same sample (split reads could pair a position with the next sample's
+ * status).  Status is that sample's verdict; seq is liveness, which no
+ * status byte can express: a dead sample loop's last status reads like a
+ * healthy one.  The full map is 11 bytes (the full-scale count follows
+ * the counter at 0x07); a poll does not need it, because it never
+ * changes */
 #define ENC_FRAME_LEN 7u
 
 #define ENC_STATUS_VALID 0x01u /* bit0: sample fresh and accepted */

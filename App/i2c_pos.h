@@ -116,8 +116,8 @@ public:
      * 0x00.  Reads the packed snapshot a single time per call.
      * @param destination  destination (host TX buffer)
      * @param maxBytes     bytes requested / room available
-     * @return             bytes copied (== maxBytes unless the snapshot is
-     *                     smaller)
+     * @return             bytes written - always maxBytes, never fewer,
+     *                     so destination must have room for maxBytes
      */
     uint8_t Read(uint8_t* destination, uint8_t maxBytes);
 

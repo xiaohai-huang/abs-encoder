@@ -90,6 +90,15 @@ Writing the pointer and reading it in two separate transactions works too.
 A master that stops early (e.g. reads 1 byte after selecting 0x00) is
 harmless — the slave re-arms at the end of the transaction.
 
+A host that polls should read the 7-byte frame, and in a **single**
+transaction: one transaction copies one snapshot, so position, status
+and `seq` always describe the same sample, while three separate reads
+could pair a position with a later sample's status.  Each byte earns its
+place — the count alone is not trustworthy without the status verdict,
+status alone cannot reveal a dead sample loop (its last byte reads like
+a healthy one, which is what `seq` is for), and `max` is left out
+because it is a constant the host reads once at startup.
+
 ## Behaviour notes
 
 - Position bytes are always the latest sample.  The status valid bit
