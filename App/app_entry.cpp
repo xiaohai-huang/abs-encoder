@@ -70,6 +70,7 @@ extern "C" void AppProcessSample(void)
     }
 
     GearPosition position = _gearDecoder.Decode(_sampleAngles);
-    positionRegister.Update(position, readHealth); /* publish to the I2C
-                                                    * slave register map */
+    positionRegister.Update(position, _sampleAngles,
+                            readHealth); /* publish to the I2C slave
+                                          * register map, angles included */
 }

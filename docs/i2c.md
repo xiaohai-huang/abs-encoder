@@ -3,7 +3,9 @@
 The decoded absolute position (docs/architecture.md) is exported as an I2C
 slave with a small register map, so any master on the bus can read the
 multi-turn position on demand.  Nothing is pushed: the encoder answers reads
-when addressed, like any encoder IC (AS5600-style).
+when addressed, like any encoder IC (AS5600-style).  Behind the position
+registers, one more register per gear carries that wheel's own angle, so a
+host can watch all four MT6701s individually (below).
 
 > Engineers integrating a host master: the practical walk-through with
 > STM32 HAL example code is in **docs/i2c-host-guide.md**.  This file is
@@ -31,6 +33,7 @@ All registers are read-only, little-endian on the wire:
 | 0x04       | status | one-byte verdict: bit0 = `valid`; bits 1..4 = read health      |
 | 0x05..0x06 | seq    | sample counter, uint16 LE: +1 per sample, wraps                |
 | 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735          |
+| 0x0B..0x12 | gears  | each wheel's measured angle, uint16 LE, one per role |
 
 The status byte carries the whole sample verdict in one register: it
 reads exactly `0x01` when the last sample was **fresh and accepted** (all
@@ -67,25 +70,55 @@ percent = counts * 100 / max    <- widen to 64-bit first: counts * 100
                                    overflows uint32 above ~42.9 M counts
 ```
 
+## Gear angles (0x0B..0x12)
+
+One register per wheel, in EncoderRole order — Sun at 0x0B, Gear1 at 0x0D,
+Gear2 at 0x0F, Gear3 at 0x11 (`PositionRegister::GearAngleRegister`
+computes these):
+
+| reg        | wheel | value                                          |
+|------------|-------|------------------------------------------------|
+| 0x0B..0x0C | Sun   | input shaft's fine angle, uint16 LE, 0 .. 16383 |
+| 0x0D..0x0E | Gear1 | the 17-tooth wheel's fine angle                |
+| 0x0F..0x10 | Gear2 | the 19-tooth wheel's fine angle                |
+| 0x11..0x12 | Gear3 | the 23-tooth wheel's fine angle                |
+
+Each value is the raw 14-bit angle that wheel's own MT6701 reported, from
+the same sample as `pos`/`status`/`seq` (one transaction, one sample) — the
+very readings the decode consumed.  They are useful on bring-up and in the
+field when the decoded position alone cannot say *which* wheel is unhappy:
+the Sun register repeats the low 14 bits of `pos`, and the three driven
+registers show the gear phases behind its turn count (a driven wheel turns
+13/teeth of a turn per input turn, so Gear1 runs 13/17 as fast as the
+input shaft).
+
+The registers are diagnostic only: `pos` (0x00) stays the certified result,
+and a host that only wants the position can ignore 0x0B..0x12 entirely.  A
+wheel whose read failed keeps its previous angle here (there is no fresh
+measurement) — the status health bit names that wheel, so a held value is
+never mistaken for a live one.
+
 ## Transactions (EEPROM-style)
 
-- **Write** (1 byte): sets the register pointer (`0x00`..`0x0A`; anything
+- **Write** (1 byte): sets the register pointer (`0x00`..`0x12`; anything
   past the map clamps to it, reads then return 0x00).
 - **Read**: serves bytes starting at the register pointer and
-  auto-increments; once past 0x0A every byte reads 0x00 (no wrap).
+  auto-increments; once past 0x12 every byte reads 0x00 (no wrap).
 
 Read the whole snapshot with a combined transaction:
 
 ```
 write 0xA0, byte 0x00,    <- register pointer
 (repeated start)
-read  0xA1, 11 bytes      <- position (4) + status + seq (2) + max (4)
+read  0xA1, 11 bytes      <- main map: position (4) + status + seq (2) + max (4)
+                             (19 bytes = the whole map, + the four gear angles)
 ```
 
-Common patterns: 4 bytes = position only; 5 bytes = position + status;
-7 bytes = position + status + seq; 11 bytes = the whole map.  The
-full-scale count on its own is 4 bytes from pointer `0x07`, which is how
-a host reads it once at startup.
+Common patterns: 4 bytes = position only; 5 = position + status; 7 = the
+poll frame (position + status + seq); 11 = the main map; 8 = the four gear
+angles from `0x0B` (one uint16 per wheel, role order); 19 = everything.
+The full-scale count on its own is 4 bytes from pointer `0x07`, which is
+how a host reads it once at startup.
 Writing the pointer and reading it in two separate transactions works too.
 A master that stops early (e.g. reads 1 byte after selecting 0x00) is
 harmless — the slave re-arms at the end of the transaction.
@@ -97,7 +130,10 @@ could pair a position with a later sample's status.  Each byte earns its
 place — the count alone is not trustworthy without the status verdict,
 status alone cannot reveal a dead sample loop (its last byte reads like
 a healthy one, which is what `seq` is for), and `max` is left out
-because it is a constant the host reads once at startup.
+because it is a constant the host reads once at startup.  The gear angles
+obey the same rule: read them in the same transaction as `pos` when you
+want to compare a wheel against the decode, and leave them out of a poll
+that only needs the certified count.
 
 ## Behaviour notes
 
@@ -106,7 +142,11 @@ because it is a constant the host reads once at startup.
   docs/architecture.md) or when any encoder read fails on that sample;
   the position bytes keep the last exported count — a host can decide
   whether to keep tracking on a stale reading.  Status bits 1..4 say
-  which encoder(s) failed.
+  which encoder(s) failed.  The gear angles are that same latest sample's
+  four readings — including a rejected one, whose wheels a host can compare
+  against the rejected count — but a wheel whose read failed keeps the
+  previous angle in its register, since there is no fresh measurement to
+  show.
 - The sample counter (`seq`) is the liveness signal: it ticks once per
   1 ms sample whether the sample was accepted or not.  A host that polls
   at least once per counter wrap (~65 s) can detect a stalled sample loop
@@ -114,8 +154,8 @@ because it is a constant the host reads once at startup.
   at rest" from "sampling died".  A read that crosses a wrap simply sees
   the new (lower) count; no transaction ever tears, because the whole map
   is copied at address-match time.
-- Before the first sample the map reads all zeros (including `seq`) and
-  `status.valid = 0`.
+- Before the first sample the map reads all zeros (including `seq` and
+  the gear angles) and `status.valid = 0`.
 - The address, once configured, survives CubeMX regeneration: the generated
   `i2c.c` keeps `OwnAddress1 = 0`; `hal_stm32.cpp` applies `PositionRegister::Address` at
   runtime during `hal.Init()`.
@@ -126,6 +166,12 @@ because it is a constant the host reads once at startup.
   register pointer; there are no writable registers and no command codes.
   The device is deliberately a pure position source: zeroing, direction
   inversion and any other host-side math belong to the master.
+- **Each gear's own angle rides along.** The four MT6701 readings are
+  exported next to the decoded position, so bring-up and field problems are
+  diagnosed over the same two wires that read the position
+  (docs/pcb-design-guide.md §10) — no SWD session, no special firmware, no
+  extra sensor traffic: the angles are copied from the sample that was
+  taken anyway, and a host that does not read them pays nothing.
 - **No calibration or reset in firmware.** The decoded position is absolute
   — it never needs an initial "home" write, and the battery-free principle
   (no persistent state, docs/architecture.md) forbids storing an offset on

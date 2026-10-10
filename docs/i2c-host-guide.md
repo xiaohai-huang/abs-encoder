@@ -19,7 +19,7 @@ spec and its numbers are normative.
   the **host** PCB, to the host's 3.3 V rail — the encoder board ships
   with its pull-up footprints unpopulated (`docs/pcb-design-guide.md` §6).
 
-## Register map (11 bytes)
+## Register map (11 bytes + the gear angles)
 
 | reg        | name   | meaning                                                       |
 |------------|--------|---------------------------------------------------------------|
@@ -27,6 +27,7 @@ spec and its numbers are normative.
 | 0x04       | status | one-byte verdict: bit0 = `valid`; bits 1..4 = read health     |
 | 0x05..0x06 | seq    | sample counter, uint16 LE, +1 per 1 ms sample, wraps          |
 | 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735         |
+| 0x0B..0x12 | gears  | each gear's measured angle, uint16 LE (Sun, Gear1..Gear3)     |
 
 Position is `turns * 16384 + angle`: turns 0..7428 from the gear phases,
 angle 0..16383 from the input shaft.  The count is continuous across the
@@ -60,6 +61,24 @@ Reading it is always three steps: write the register pointer you want
 (`0x00` for the snapshot, `0x07` for the full-scale count), read the
 bytes back (one combined transaction, or two separate ones — the pointer
 persists), interpret.
+
+### Each gear's own angle (0x0B..0x12)
+
+The four trailing registers hold the wheels' raw readings, for when `pos`
+alone does not explain what the hardware is doing: one uint16 LE per wheel,
+in EncoderRole order — Sun at `0x0B`, Gear1 at `0x0D`, Gear2 at `0x0F`,
+Gear3 at `0x11`.  Each is the 14-bit angle (0 .. 16383) that wheel's own
+MT6701 reported on the same sample as `pos`/`status`/`seq`.
+
+They are the readings the decode consumed, so they say *which* wheel is
+unhappy when the position cannot: the Sun register is the low 14 bits of
+`pos`, and the three driven registers are the gear phases behind its turn
+count (a driven wheel turns 13/teeth of a turn per input turn — Gear1 runs
+13/17 as fast as the input).  Diagnostic only: `pos` (0x00) stays the
+certified position, and a wheel whose read failed keeps its previous angle
+here — the status health bit names it, so a held value is never mistaken
+for a live one (wire-level details: `docs/i2c.md`; the hardware side:
+`docs/pcb-design-guide.md` §10).
 
 ## Trust rules (read before writing code)
 
@@ -122,15 +141,19 @@ extern I2C_HandleTypeDef hi2c2; /* your master peripheral (CubeMX) */
 #define ENC_REG_STATUS 0x04u
 #define ENC_REG_SEQ    0x05u
 #define ENC_REG_MAX_POSITION 0x07u
+#define ENC_REG_GEAR_ANGLE 0x0Bu /* Sun's angle; +2 bytes per further wheel */
+
+#define ENC_GEAR_ANGLE_LEN 2u   /* one uint16 per wheel */
+#define ENC_GEAR_ANGLE_COUNT 4u /* Sun, Gear1, Gear2, Gear3 */
 
 /* the polling snapshot: position + status + seq, in ONE transaction --
  * a transaction copies one snapshot, so the three always describe the
  * same sample (split reads could pair a position with the next sample's
  * status).  Status is that sample's verdict; seq is liveness, which no
  * status byte can express: a dead sample loop's last status reads like a
- * healthy one.  The full map is 11 bytes (the full-scale count follows
- * the counter at 0x07); a poll does not need it, because it never
- * changes */
+ * healthy one.  The main map is 11 bytes (the full-scale count follows
+ * the counter at 0x07, the gear angles after that); a poll needs neither:
+ * the first never changes, the second is diagnostics only */
 #define ENC_FRAME_LEN 7u
 
 #define ENC_STATUS_VALID 0x01u /* bit0: sample fresh and accepted */
@@ -190,6 +213,32 @@ HAL_StatusTypeDef EncoderReadMaxPosition(I2C_HandleTypeDef* hi2c,
 
     *out = (uint32_t)frame[0] | ((uint32_t)frame[1] << 8u) |
            ((uint32_t)frame[2] << 16u) | ((uint32_t)frame[3] << 24u);
+    return HAL_OK;
+}
+
+/* Each gear's own 14-bit angle, one uint16 LE per wheel in EncoderRole
+ * order: 8 bytes from pointer 0x0B.  Diagnostic data -- the certified
+ * position is still the 4-byte read at 0x00; read both in ONE transaction
+ * (19 bytes from 0x00) when you want to compare a wheel against it.  A
+ * wheel whose status health bit is set is showing a held angle. */
+HAL_StatusTypeDef EncoderReadGearAngles(I2C_HandleTypeDef* hi2c,
+                                        uint16_t angles[ENC_GEAR_ANGLE_COUNT])
+{
+    uint8_t frame[ENC_GEAR_ANGLE_COUNT * ENC_GEAR_ANGLE_LEN];
+    uint8_t wheel;
+
+    if (HAL_I2C_Mem_Read(hi2c, ENC_ADDR, ENC_REG_GEAR_ANGLE,
+                         I2C_MEMADD_SIZE_8BIT, frame, sizeof(frame),
+                         100u) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+    for (wheel = 0u; wheel < ENC_GEAR_ANGLE_COUNT; wheel++)
+    {
+        angles[wheel] = (uint16_t)((uint16_t)frame[2u * wheel] |
+                                   ((uint16_t)frame[2u * wheel + 1u] << 8u));
+    }
     return HAL_OK;
 }
 ```
@@ -255,7 +304,8 @@ void PollEncoder(void)
 ## Practical notes
 
 - **Partial reads are fine**: 4 bytes = position only, 5 = position +
-  status, 11 = the whole map.  Reading less than the full map never
+  status, 7 = the poll frame, 11 = the main map; the four gear angles are
+  8 bytes from pointer `0x0B`.  Reading less than the full map never
   disturbs later reads (the pointer advances, never wraps; past the map
   everything reads 0).  The full-scale count is a 4-byte read at pointer
   `0x07` on its own, which a poll never needs.
@@ -280,14 +330,17 @@ void PollEncoder(void)
 
 The status byte holds two independent detectors in one register: bits 1..4
 ask "did all four sensors answer cleanly?", the valid bit asks "is the
-decoded position physically possible?".  Start from the decision table,
-then follow the checklist.
+decoded position physically possible?".  When both answer yes but the
+mechanics are still suspect, the gear angles (0x0B..0x12) answer the next
+question — "what does each wheel see?" — one register per wheel.  Start
+from the decision table, then follow the checklist.
 
 | you observe                                        | meaning                                   | most likely cause                                   |
 |----------------------------------------------------|-------------------------------------------|-----------------------------------------------------|
 | status bits 1..4 set, `seq` ticking                | one encoder read failed                   | wiring/EMC on that encoder's SSI lines, magnet problem, dead chip |
 | status = 0x1E                                      | all four reads failed                     | sensor farm power, shared bus wiring, multiple stuck chips |
 | status = 0x00                                      | reads clean, decode implausible           | transient tooth-slot misread; if persistent: mechanical or speed |
+| a gear angle tracks at the wrong rate for its gear | one wheel disagrees with the decode       | magnet, mesh or wrong gear on that wheel (see the gear-angle section) |
 | `seq` frozen between polls                         | sample loop is dead                       | firmware hang — position is stale, whatever the other bytes say |
 | every transaction NACKs                            | slave did not ACK the address             | encoder unpowered, not on this bus, or pull-ups missing |
 
@@ -336,6 +389,26 @@ encoder's sample loop stops, whatever the status bytes claim.  Reset the
 encoder.  A sudden drop back toward small `seq` values means the encoder
 restarted; the position itself is still correct afterwards, because it is
 absolute (the gears are the memory, docs/architecture.md).
+
+### A gear angle looks wrong
+
+The gear angles (0x0B..0x12, above) are the per-wheel view: `pos` can look
+plausible while one wheel disagrees with the decode.
+
+- **The Sun angle is the low 14 bits of `pos`** — if those disagree, the
+  host's own frame decode is wrong, not the device.
+- **A driven angle tracking at the wrong rate** (each should advance
+  13/17, 13/19 or 13/23 of a turn per input turn): eccentric or tilted
+  magnet on that wheel, gear-mesh damage, or a wheel whose tooth count
+  does not match the firmware's gearbox (`App/gear_config.h`) — wrong gear
+  fitted, teeth miscounted.
+- **All three driven angles wrong while `status` never certifies**: the
+  sensors are probably under the wrong gear axes — check the CSN offset
+  warning in docs/pcb-design-guide.md §1 (CSN1 is the Sun, CSN2..CSN4 are
+  Gear1..Gear3).
+- **An angle frozen while the shaft moves, health bit set**: that wheel's
+  read is failing (see the health-bit section above) — the register shows
+  the last angle it reported, not a fresh one.
 
 ### Every transaction NACKs
 

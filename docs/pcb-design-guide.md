@@ -327,6 +327,9 @@ The I2C register map is the board's built-in test bench
    one chip's soldering, wiring or magnet.  A chip that reads but CRC-fails
    every frame returns 0xFF-bytes (dead chip, missing 3.3 V, floating
    CSN) — see `docs/i2c-host-guide.md` for the full decode table.
+   The gear-angle registers (`docs/i2c.md`, 0x0B..0x12) go further: each
+   wheel's own live angle, so a driven angle that tracks at the wrong rate
+   points at that one wheel's magnet, mesh or gear.
    Remember the CRC-6 acceptance on real hardware is binary
    (`docs/MT6701.md`): every frame validates, or none do; if frames are
    garbage, the fallback experiment is SPI mode 2 — a CubeMX-only change.
@@ -335,10 +338,11 @@ The I2C register map is the board's built-in test bench
    spinning.
 6. **System check**: rotate the input shaft slowly through several turns —
    `pos` must move monotonically (counts = turns·16384 + angle, never
-   tearing at the seam) with `status = 0x01`; a deliberately fast flick
-   should exercise the slew guard (`status = 0x00` briefly, position
-   held).  Power-cycle at random angles: `pos` returns to the same count —
-   the whole point of the design.
+   tearing at the seam) with `status = 0x01` and the four gear angles
+   tracking smoothly; a deliberately fast flick should exercise the slew
+   guard (`status = 0x00` briefly, position held).  Power-cycle at random
+   angles: `pos` returns to the same count — the whole point of the
+   design.
 
 ## 11. Final review checklist
 
