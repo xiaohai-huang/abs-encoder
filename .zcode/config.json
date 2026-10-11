@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "servers": {
+      "eide": {
+        "type": "http",
+        "url": "http://localhost:8940/mcp"
+      }
+    }
+  }
+}
