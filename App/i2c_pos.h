@@ -58,35 +58,35 @@ public:
     static constexpr uint8_t RegisterCounter     = 0x05u;
     static constexpr uint8_t RegisterMaxPosition = 0x07u;
     /** First gear angle (the Sun's); role `r`'s register is at
-     *  RegisterGearAngle + r * GearAngleStride. */
+     *  RegisterGearAngle + r * BytesPerGearAngle. */
     static constexpr uint8_t RegisterGearAngle = 0x0Bu;
-    /** Bytes per gear angle: one uint16 per wheel. */
-    static constexpr uint8_t GearAngleStride = 2u;
-    /** Gear-angle registers: one per EncoderRole. */
-    static constexpr uint8_t GearAngleRows =
+    /** Bytes one gear angle occupies on the wire: a uint16 per wheel. */
+    static constexpr uint8_t BytesPerGearAngle = 2u;
+    /** Gear angles in the map: one per EncoderRole. */
+    static constexpr uint8_t GearAngleCount =
         static_cast<uint8_t>(EncoderRole::RoleCount);
     /** One past the last byte of the map (the last gear angle is 2 bytes). */
     static constexpr uint8_t RegisterCount =
-        RegisterGearAngle + GearAngleStride * GearAngleRows;
+        RegisterGearAngle + BytesPerGearAngle * GearAngleCount;
 
     /** Register pointer of `role`'s gear angle. */
     static constexpr uint8_t GearAngleRegister(EncoderRole role)
     {
         return static_cast<uint8_t>(
-            RegisterGearAngle + GearAngleStride * static_cast<uint8_t>(role));
+            RegisterGearAngle + BytesPerGearAngle * static_cast<uint8_t>(role));
     }
 
     /* The map tiles 0x00..RegisterCount-1 with no gap and no overlap: the
      * four fixed registers, then one gear angle per role.  Read() walks the
-     * rows in that order and serves each byte from the one row that covers
-     * it, so this is what makes every valid register pointer land in
-     * exactly one row. */
+     * fields in that order and serves each byte from the one field that
+     * covers it, so this is what makes every valid register pointer land in
+     * exactly one field. */
     static_assert(RegisterStatus == 4u &&
                       RegisterCounter == RegisterStatus + 1u &&
                       RegisterMaxPosition == RegisterCounter + 2u &&
                       RegisterGearAngle == RegisterMaxPosition + 4u &&
                       RegisterCount ==
-                          RegisterGearAngle + GearAngleStride * GearAngleRows,
+                          RegisterGearAngle + BytesPerGearAngle * GearAngleCount,
                   "register map must tile: pos 0x00..0x03, status 0x04, "
                   "seq 0x05..0x06, max 0x07..0x0A, gear angles 0x0B..0x12");
 
@@ -114,7 +114,7 @@ public:
         return static_cast<uint8_t>(1u << (static_cast<uint8_t>(role) + 1u));
     }
 
-    /** Start from an empty snapshot (all zeros, cursor at register 0). */
+    /** Start from an empty snapshot (all zeros, register pointer at 0). */
     PositionRegister();
 
     /** Clear the snapshot and the register pointer (idempotent). */
@@ -155,12 +155,14 @@ public:
     uint8_t Read(uint8_t* destination, uint8_t maxBytes);
 
 private:
-    uint32_t _positionSnapshot;       /* regs 0x00..0x03: position count */
-    uint8_t  _statusByte;             /* reg 0x04: bit0 valid, 1..4 health */
-    uint16_t _sampleCounter;          /* regs 0x05..0x06: liveness, +1/sample */
-    uint16_t _gearAngle[GearAngleRows]; /* regs 0x0B..: measured angle per role */
-    uint8_t  _registerCursor;         /* register pointer (host-writable),
-                                         clamped to RegisterCount */
+    uint32_t _position;                 /* regs 0x00..0x03: position count --
+                                           one aligned word, so a concurrent
+                                           reader never sees a torn mix */
+    uint8_t  _status;                   /* reg 0x04: bit0 valid, 1..4 health */
+    uint16_t _sampleCounter;            /* regs 0x05..0x06: liveness, +1/sample */
+    uint16_t _gearAngles[GearAngleCount]; /* regs 0x0B..: measured angle per role */
+    uint8_t  _registerPointer;          /* register pointer (host-writable),
+                                           clamped to RegisterCount */
 };
 
 /** The firmware's register map instance; the I2C callbacks in

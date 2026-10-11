@@ -20,24 +20,24 @@
 PositionRegister positionRegister;
 
 PositionRegister::PositionRegister()
-    : _positionSnapshot(0u)
-    , _statusByte(0u)
+    : _position(0u)
+    , _status(0u)
     , _sampleCounter(0u)
-    , _gearAngle{}
-    , _registerCursor(0u)
+    , _gearAngles{}
+    , _registerPointer(0u)
 {
 }
 
 void PositionRegister::Init()
 {
-    _positionSnapshot = 0u;
-    _statusByte = 0u;
+    _position = 0u;
+    _status = 0u;
     _sampleCounter = 0u;
-    for (uint8_t role = 0u; role < GearAngleRows; role++)
+    for (uint8_t role = 0u; role < GearAngleCount; role++)
     {
-        _gearAngle[role] = 0u;
+        _gearAngles[role] = 0u;
     }
-    _registerCursor = 0u;
+    _registerPointer = 0u;
 }
 
 void PositionRegister::Update(const GearPosition& position,
@@ -45,8 +45,8 @@ void PositionRegister::Update(const GearPosition& position,
 {
     /* one aligned 32-bit store: a concurrent reader sees either the old or
        the new count, never a torn mix of turn and angle bytes */
-    _positionSnapshot =
-        static_cast<uint32_t>(position.Turns) * CountsPerTurn + position.Angle;
+    _position = static_cast<uint32_t>(position.Turns) * CountsPerTurn +
+                position.Angle;
     _sampleCounter++; /* liveness: +1 per sample, wraps (docs/i2c.md) */
 
     /* Each wheel's own angle, in EncoderRole order (Sun, Gear1..Gear3), so
@@ -55,66 +55,64 @@ void PositionRegister::Update(const GearPosition& position,
     const uint16_t measuredAngles[] = {angles.Sun, angles.Gear1, angles.Gear2,
                                        angles.Gear3};
     static_assert(sizeof(measuredAngles) / sizeof(measuredAngles[0]) ==
-                      GearAngleRows,
+                      GearAngleCount,
                   "one measured angle per gear register, in EncoderRole order");
-    for (uint8_t role = 0u; role < GearAngleRows; role++)
+    for (uint8_t role = 0u; role < GearAngleCount; role++)
     {
-        _gearAngle[role] = measuredAngles[role];
+        _gearAngles[role] = measuredAngles[role];
     }
 
     /* one byte carries both verdicts, so they can never disagree:
        the valid bit only when every read succeeded and the slew guard
        accepted, plus one bit per failed encoder read (bits 1..4) */
-    _statusByte =
-        static_cast<uint8_t>(readHealth |
-                             ((position.IsValid && readHealth == 0u)
-                                  ? StatusValid
-                                  : 0u));
+    _status = static_cast<uint8_t>(
+        readHealth | ((position.IsValid && readHealth == 0u) ? StatusValid
+                                                             : 0u));
 }
 
 void PositionRegister::Select(uint8_t registerIndex)
 {
-    _registerCursor =
+    _registerPointer =
         (registerIndex < RegisterCount) ? registerIndex : RegisterCount;
 }
 
-/* One row of the register map: the register pointer it starts at, its
- * width in bytes, and the value it serves.  The rows *are* the map --
- * Read() walks them in ascending order and serves the bytes of the window
- * from the rows that cover it, so there is no per-register branch to keep
- * in step with the layout (the static_assert in i2c_pos.h guarantees the
- * rows tile the whole map). */
-struct RegisterRow
+/* One field of the register map: the register it starts at, how many bytes
+ * wide it is, and the value it serves.  The fields *are* the map: Read()
+ * walks them in order and asks each for whatever part of it falls inside
+ * the host's read window, so there is no per-register branch to keep in
+ * step with the layout (the static_assert in i2c_pos.h guarantees the
+ * fields tile the whole map). */
+struct RegisterField
 {
-    uint8_t  base;
-    uint8_t  size;
-    uint32_t value;
-};
+    uint8_t  FirstRegister;
+    uint8_t  ByteWidth;
+    uint32_t Value;
 
-/* Byte `offset` of a little-endian register value. */
-static uint8_t ByteOf(uint32_t value, uint8_t offset)
-{
-    return static_cast<uint8_t>(value >> (8u * offset));
-}
-
-/* Copy the bytes of one row that fall inside [cursor, end) to
- * `destination`, returning how many were written (0 when the window misses
- * the row). */
-static uint8_t ServeRow(const RegisterRow& row, uint16_t cursor, uint16_t end,
-                        uint8_t* destination)
-{
-    uint8_t        written = 0u;
-    const uint16_t rowEnd = static_cast<uint16_t>(row.base + row.size);
-    const uint16_t from = (row.base > cursor) ? row.base : cursor;
-    const uint16_t to = (rowEnd < end) ? rowEnd : end;
-    for (uint16_t at = from; at < to; at++)
+    /* Copy the bytes of this field that fall inside [readStart, readEnd)
+     * to `destination`, returning how many were written (0 when the window
+     * misses the field).  Overlap at either end may be partial: a host is
+     * allowed to start reading in the middle of a value. */
+    uint8_t Serve(uint16_t readStart, uint16_t readEnd,
+                  uint8_t* destination) const
     {
-        destination[written] =
-            ByteOf(row.value, static_cast<uint8_t>(at - row.base));
-        written++;
+        uint8_t        bytesWritten = 0u;
+        const uint16_t fieldEnd =
+            static_cast<uint16_t>(FirstRegister + ByteWidth);
+        for (uint16_t reg = FirstRegister; reg < fieldEnd; reg++)
+        {
+            if (reg < readStart || reg >= readEnd)
+            {
+                continue; /* this register of mine is outside the window */
+            }
+            const uint8_t byteIndex =
+                static_cast<uint8_t>(reg - FirstRegister); /* 0 = low byte */
+            destination[bytesWritten] =
+                static_cast<uint8_t>(Value >> (8u * byteIndex));
+            bytesWritten++;
+        }
+        return bytesWritten;
     }
-    return written;
-}
+};
 
 uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
 {
@@ -123,53 +121,61 @@ uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
        32-bit load and its four bytes can never tear even though the sample
        loop refreshes it at 1 kHz.  The gear angles are captured the same
        way, so one frame describes one sample, never a mix of two. */
-    const uint32_t position = _positionSnapshot;
-    const uint8_t  status   = _statusByte;
+    const uint32_t position = _position;
+    const uint8_t  status   = _status;
     const uint16_t counter  = _sampleCounter;
-    uint16_t       gearAngle[GearAngleRows];
-    for (uint8_t role = 0u; role < GearAngleRows; role++)
+    uint16_t       gearAngles[GearAngleCount];
+    for (uint8_t role = 0u; role < GearAngleCount; role++)
     {
-        gearAngle[role] = _gearAngle[role];
+        gearAngles[role] = _gearAngles[role];
     }
 
-    /* The bytes the host asked for; the cursor is clamped to the map, so
-       everything past RegisterCount is zero-filled at the end. */
-    const uint16_t cursor = _registerCursor;
-    const uint16_t end = static_cast<uint16_t>(cursor + maxBytes);
-    uint8_t        written = 0u;
+    /* The register window the host asked for; the start pointer is clamped
+       to the map, so everything past RegisterCount is zero-filled. */
+    const uint16_t readStart = _registerPointer;
+    const uint16_t readEnd = static_cast<uint16_t>(readStart + maxBytes);
+    uint8_t        bytesWritten = 0u;
 
-    /* The map, in order: the four fixed registers, then one angle per role.
-       Rows tile, so the bytes served in the window add up to exactly the
-       bytes asked for. */
-    const RegisterRow fixedRows[] = {
+    /* The whole map as one list of fields: the four fixed registers, then
+       one gear angle per role.  Adding a register = adding one line here.
+       The fields tile 0x00..RegisterCount (static_assert in i2c_pos.h), so
+       inside the window they serve exactly the bytes asked for. */
+    const RegisterField fixedFields[] = {
         {0x00u, 4u, position},
         {RegisterStatus, 1u, status},
         {RegisterCounter, 2u, counter},
         {RegisterMaxPosition, 4u, MaxPosition},
     };
-    const uint8_t fixedRowCount =
-        static_cast<uint8_t>(sizeof(fixedRows) / sizeof(fixedRows[0]));
-    for (uint8_t row = 0u; row < fixedRowCount; row++)
+    static constexpr uint8_t fixedFieldCount = static_cast<uint8_t>(
+        sizeof(fixedFields) / sizeof(fixedFields[0]));
+
+    RegisterField fields[fixedFieldCount + GearAngleCount];
+    uint8_t       fieldCount = 0u;
+    for (uint8_t field = 0u; field < fixedFieldCount; field++)
     {
-        written += ServeRow(fixedRows[row], cursor, end, destination + written);
+        fields[fieldCount++] = fixedFields[field];
     }
-    for (uint8_t role = 0u; role < GearAngleRows; role++)
+    for (uint8_t role = 0u; role < GearAngleCount; role++)
     {
-        written += ServeRow(
-            {GearAngleRegister(static_cast<EncoderRole>(role)), 2u,
-             gearAngle[role]},
-            cursor, end, destination + written);
+        fields[fieldCount++] = {GearAngleRegister(static_cast<EncoderRole>(role)),
+                                BytesPerGearAngle, gearAngles[role]};
     }
-    while (written < maxBytes)
+
+    for (uint8_t field = 0u; field < fieldCount; field++)
     {
-        destination[written] = 0u; /* past the map: zero-fill, never wraps */
-        written++;
+        bytesWritten += fields[field].Serve(readStart, readEnd,
+                                            destination + bytesWritten);
+    }
+    while (bytesWritten < maxBytes)
+    {
+        destination[bytesWritten] = 0u; /* past the map: zero-fill, never wraps */
+        bytesWritten++;
     }
 
     /* Auto-increment, stopping at the map end. */
-    const uint16_t nextCursor = static_cast<uint16_t>(cursor + written);
-    _registerCursor = (nextCursor < RegisterCount)
-                          ? static_cast<uint8_t>(nextCursor)
-                          : RegisterCount;
-    return written;
+    const uint16_t nextPointer = static_cast<uint16_t>(readStart + bytesWritten);
+    _registerPointer = (nextPointer < RegisterCount)
+                           ? static_cast<uint8_t>(nextPointer)
+                           : RegisterCount;
+    return bytesWritten;
 }
