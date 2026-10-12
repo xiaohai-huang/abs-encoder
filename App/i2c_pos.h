@@ -144,15 +144,21 @@ public:
     void Select(uint8_t registerIndex);
 
     /**
-     * Copy bytes to the reader starting at the register pointer, advancing
-     * it (auto-increment, EEPROM style); past the map every byte reads
-     * 0x00.  Reads the packed snapshot a single time per call.
-     * @param destination  destination (host TX buffer)
-     * @param maxBytes     bytes requested / room available
-     * @return             bytes written - always maxBytes, never fewer,
-     *                     so destination must have room for maxBytes
+     * Compose the whole register map for the reader, starting at the
+     * register pointer: destination[0] is the byte at the pointer, the map
+     * bytes before it are skipped, and the tail past the map end reads
+     * 0x00.  Reads the packed snapshot a single time per call, so every
+     * byte of one call describes one sample.
+     *
+     * The width is the whole map because the host's read length is not
+     * knowable here: the I2C shift register takes a prefix of what was
+     * composed and the master's NACK decides where it ends.  The pointer
+     * is consumed by the read (it parks past the map), so a read without a
+     * preceding Select returns zeros rather than stale map bytes.
+     * @param destination  host TX buffer; the array reference makes the
+     *                     RegisterCount-byte requirement compile-time
      */
-    uint8_t Read(uint8_t* destination, uint8_t maxBytes);
+    void Read(uint8_t (&destination)[RegisterCount]);
 
 private:
     uint32_t _position;                 /* regs 0x00..0x03: position count --

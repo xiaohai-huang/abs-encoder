@@ -154,13 +154,13 @@ extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c, uint8_t dir,
     {
         /* Master wants to read: serve the register map from the current
          * pointer (HAL passes the master's direction: RECEIVE = master
-         * receives = slave transmits).  The transfer count is fixed to the
-         * rest of the map; a master that stops early simply ends the
-         * transaction, which the listen-complete and error callbacks below
-         * clean up. */
-        uint8_t byteCount = positionRegister.Read(
-            _txBuffer, static_cast<uint8_t>(sizeof(_txBuffer)));
-        HAL_I2C_Slave_Seq_Transmit_IT(hi2c, _txBuffer, byteCount,
+         * receives = slave transmits).  The whole map is composed and
+         * armed; how many of those bytes the master actually clocks out is
+         * its own choice -- it NACKs the last byte it wants and stops, and
+         * the listen-complete and error callbacks below clean up. */
+        positionRegister.Read(_txBuffer);
+        HAL_I2C_Slave_Seq_Transmit_IT(hi2c, _txBuffer,
+                                      static_cast<uint16_t>(sizeof(_txBuffer)),
                                       I2C_FIRST_AND_LAST_FRAME);
     }
     else

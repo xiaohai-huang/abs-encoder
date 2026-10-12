@@ -215,7 +215,7 @@ static void TestI2cPosition()
     positionRegister.Update(position, MakeAngles(0u, 0u, 0u, 0u), 0u);
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedOrigin[] = {
         0u, 0u, 0u, 0u, PositionRegister::StatusValid,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -233,7 +233,7 @@ static void TestI2cPosition()
                             0u);
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedOneTurn[] = {
         0x00u, 0x40u, 0x00u, 0x00u, PositionRegister::StatusValid,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -250,7 +250,7 @@ static void TestI2cPosition()
         position, MakeAngles(Mt6701::AngleMax, 0x1111u, 0x2222u, 0x3333u), 0u);
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedExtreme[] = {
         0xFFu, 0x3Fu, 0x41u, 0x07u, PositionRegister::StatusValid,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -278,7 +278,7 @@ static void TestI2cPosition()
     positionRegister.Update(position, MakeAngles(0x1234u, 0u, 0u, 0u), 0u);
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedRejected[] = {
         0x34u, 0x92u, 0x34u, 0x01u, 0x00u,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -300,7 +300,7 @@ static void TestI2cPosition()
             PositionRegister::HealthBit(EncoderRole::Gear3));
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedFaulty[] = {
         0x34u, 0x92u, 0x34u, 0x01u, 0x12u,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -308,36 +308,40 @@ static void TestI2cPosition()
         GEAR_ANGLE(0u), GEAR_ANGLE(0u)};
     CHECK(std::memcmp(bytes, expectedFaulty, sizeof(bytes)) == 0);
 
-    /* auto-increment across separate read calls, one byte at a time --
-     * the whole map from 0x02 on: position tail, status, counter, the
-     * constant max register, the four gear angles, then zero-fill past the
-     * map */
-    const uint8_t expectedWalk[] = {
+    /* one transaction from pointer 0x02: the map tail in register order
+     * (position tail, status, counter, the constant max register, the four
+     * gear angles), then zero-fill past the map */
+    const uint8_t expectedTail[] = {
         0x34u, 0x01u, 0x12u,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
         EXPECTED_MAX_REG_BYTES, GEAR_ANGLE(0x1234u), GEAR_ANGLE(0u),
-        GEAR_ANGLE(0u), GEAR_ANGLE(0u), 0u /* past map */, 0u /* stays 0 */};
+        GEAR_ANGLE(0u), GEAR_ANGLE(0u), 0u /* past map */, 0u};
     positionRegister.Select(2u);
-    for (size_t byteIndex = 0u; byteIndex < sizeof(expectedWalk); byteIndex++)
-    {
-        CHECK(positionRegister.Read(bytes, 1u) == 1u);
-        CHECK(bytes[0] == expectedWalk[byteIndex]);
-    }
+    positionRegister.Read(bytes);
+    CHECK(std::memcmp(bytes, expectedTail, sizeof(bytes)) == 0);
 
-    /* the max register reads standalone too: a host scales its positions
-     * with one 4-byte read at pointer 0x07, without the rest of the map */
+    /* the read consumes the pointer: a second read with no pointer write
+     * in between reads zeros -- not the tail again, and never a wrap */
+    positionRegister.Read(bytes);
+    const uint8_t expectedZeros[PositionRegister::RegisterCount] = {};
+    CHECK(std::memcmp(bytes, expectedZeros, sizeof(bytes)) == 0);
+
+    /* the max register leads a transaction too: a host that selects 0x07
+     * and clocks 4 bytes gets the constant full-scale count first, without
+     * the rest of the map */
     positionRegister.Select(PositionRegister::RegisterMaxPosition);
-    CHECK(positionRegister.Read(bytes, 4u) == 4u);
+    positionRegister.Read(bytes);
     const uint8_t expectedMaxOnly[] = {EXPECTED_MAX_REG_BYTES};
     CHECK(std::memcmp(bytes, expectedMaxOnly, 4u) == 0);
 
-    /* a pointer past the map reads zeros too */
+    /* a pointer past the map reads zeros -- the whole transaction */
     positionRegister.Select(0xFFu);
-    CHECK(positionRegister.Read(bytes, 4u) == 4u);
-    const uint8_t expectedZeros4[] = {0u, 0u, 0u, 0u};
-    CHECK(std::memcmp(bytes, expectedZeros4, 4u) == 0);
+    positionRegister.Read(bytes);
+    CHECK(std::memcmp(bytes, expectedZeros, sizeof(bytes)) == 0);
 
-    /* refreshing the snapshot does not disturb the cursor */
+    /* a snapshot refresh between Select and Read does not disturb the
+     * pointer: the read still starts at the selected register (byte 3 of
+     * count 81,929 = 0x014009, then the status byte) */
     positionRegister.Select(3u);
     position.IsValid = true;
     position.Turns = 5u;
@@ -345,19 +349,21 @@ static void TestI2cPosition()
     positionRegister.Update(position, MakeAngles(9u, 0u, 0u, 0u),
                             0u); /* count 81,929 = 0x014009 */
     expectedCounter++;
-    CHECK(positionRegister.Read(bytes, 1u) == 1u && bytes[0] == 0x00u);
-    CHECK(positionRegister.Read(bytes, 1u) == 1u &&
-          bytes[0] == PositionRegister::StatusValid);
+    positionRegister.Read(bytes);
+    CHECK(bytes[0] == 0x00u);
+    CHECK(bytes[1] == PositionRegister::StatusValid);
 
-    /* window through the middle of the map (pointer + partial read) */
+    /* starting inside a value: a host at pointer 0x01 gets count bytes
+     * 1..2 first, so a transaction can begin mid-register */
     positionRegister.Select(1u);
-    CHECK(positionRegister.Read(bytes, 2u) == 2u);
+    positionRegister.Read(bytes);
     const uint8_t expectedWindow[] = {0x40u, 0x01u};
     CHECK(std::memcmp(bytes, expectedWindow, 2u) == 0); /* count bytes 1..2 */
 
-    /* the gear angles read standalone too: 8 bytes from pointer 0x0B, one
-       register per role, in role order -- the Sun's is the position's low
-       14 bits, the driven wheels show what their own chips measured */
+    /* the gear angles lead their own transaction too: a host at pointer
+       0x0B gets one register per role, in role order -- the Sun's is the
+       position's low 14 bits, the driven wheels show what their own chips
+       measured */
     position.IsValid = true;
     position.Turns = 4000u;
     position.Angle = 333u;
@@ -368,7 +374,7 @@ static void TestI2cPosition()
                                           GEAR_ANGLE(14125u),
                                           GEAR_ANGLE(14435u)};
     positionRegister.Select(PositionRegister::RegisterGearAngle);
-    CHECK(positionRegister.Read(bytes, 8u) == 8u);
+    positionRegister.Read(bytes);
     CHECK(std::memcmp(bytes, expectedGearAngles, 8u) == 0);
 }
 
@@ -403,7 +409,7 @@ static void TestAppSampleLoop()
     AppProcessSample();
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedHealthy[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, PositionRegister::StatusValid,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -416,7 +422,7 @@ static void TestAppSampleLoop()
     AppProcessSample();
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedSunFault[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u,
         PositionRegister::HealthBit(EncoderRole::Sun),
@@ -435,7 +441,7 @@ static void TestAppSampleLoop()
     AppProcessSample();
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedAllDead[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, 0x1Eu,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -450,7 +456,7 @@ static void TestAppSampleLoop()
     AppProcessSample();
     expectedCounter++;
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, sizeof(bytes)) == sizeof(bytes));
+    positionRegister.Read(bytes);
     const uint8_t expectedRecovered[] = {
         0x4Du, 0x01u, 0xE8u, 0x03u, PositionRegister::StatusValid,
         (uint8_t)(expectedCounter & 0xFFu), (uint8_t)(expectedCounter >> 8u),
@@ -483,11 +489,11 @@ static void TestGearAngles()
        role; the Sun's is the low 14 bits of the position count beside it */
     AppProcessSample();
     positionRegister.Select(PositionRegister::RegisterGearAngle);
-    CHECK(positionRegister.Read(bytes, 8u) == 8u);
+    positionRegister.Read(bytes);
     const uint8_t expectedAngles[] = {EXPECTED_ANGLES_HEALTHY};
     CHECK(std::memcmp(bytes, expectedAngles, 8u) == 0);
     positionRegister.Select(0u);
-    CHECK(positionRegister.Read(bytes, 4u) == 4u);
+    positionRegister.Read(bytes);
     CHECK((((uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) |
             ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u)) %
            16384u) == 333u);
@@ -498,14 +504,14 @@ static void TestGearAngles()
     Mt6701SlaveSim::SetAngle(EncoderRole::Gear2, 14125u);
     AppProcessSample();
     positionRegister.Select(PositionRegister::RegisterGearAngle);
-    CHECK(positionRegister.Read(bytes, 8u) == 8u);
+    positionRegister.Read(bytes);
     const uint8_t expectedMoved[] = {GEAR_ANGLE(333u), GEAR_ANGLE(0x35B3u),
                                      GEAR_ANGLE(14125u),
                                      GEAR_ANGLE(0x3863u)};
     CHECK(std::memcmp(bytes, expectedMoved, 8u) == 0);
     positionRegister.Select(PositionRegister::RegisterStatus);
-    CHECK(positionRegister.Read(bytes, 1u) == 1u &&
-          bytes[0] == PositionRegister::StatusValid);
+    positionRegister.Read(bytes);
+    CHECK(bytes[0] == PositionRegister::StatusValid);
 
     /* a failed read leaves that wheel's last angle in its register -- the
        health bit is what tells the host the value is held, so the register
@@ -513,10 +519,10 @@ static void TestGearAngles()
     Mt6701SlaveSim::SetTrackLoss(EncoderRole::Gear2, true);
     AppProcessSample();
     positionRegister.Select(PositionRegister::RegisterStatus);
-    CHECK(positionRegister.Read(bytes, 1u) == 1u &&
-          bytes[0] == PositionRegister::HealthBit(EncoderRole::Gear2));
+    positionRegister.Read(bytes);
+    CHECK(bytes[0] == PositionRegister::HealthBit(EncoderRole::Gear2));
     positionRegister.Select(PositionRegister::RegisterGearAngle);
-    CHECK(positionRegister.Read(bytes, 8u) == 8u);
+    positionRegister.Read(bytes);
     CHECK(std::memcmp(bytes, expectedMoved, 8u) == 0);
     Mt6701SlaveSim::SetTrackLoss(EncoderRole::Gear2, false);
 }

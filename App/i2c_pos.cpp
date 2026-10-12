@@ -88,21 +88,23 @@ struct RegisterField
     uint8_t  ByteWidth;
     uint32_t Value;
 
-    /* Copy the bytes of this field that fall inside [readStart, readEnd)
-     * to `destination`, returning how many were written (0 when the window
-     * misses the field).  Overlap at either end may be partial: a host is
-     * allowed to start reading in the middle of a value. */
-    uint8_t Serve(uint16_t readStart, uint16_t readEnd,
-                  uint8_t* destination) const
+    /* Copy the bytes of this field at or after `readStart` to
+     * `destination`, returning how many were written (0 when the field is
+     * entirely behind the window).  The overlap may be partial: a host is
+     * allowed to start reading in the middle of a value.  The map end
+     * needs no bound of its own: the fields tile exactly
+     * 0x00..RegisterCount-1 (static_assert in i2c_pos.h), so none of them
+     * can reach past it. */
+    uint8_t Serve(uint16_t readStart, uint8_t* destination) const
     {
         uint8_t        bytesWritten = 0u;
         const uint16_t fieldEnd =
             static_cast<uint16_t>(FirstRegister + ByteWidth);
         for (uint16_t reg = FirstRegister; reg < fieldEnd; reg++)
         {
-            if (reg < readStart || reg >= readEnd)
+            if (reg < readStart)
             {
-                continue; /* this register of mine is outside the window */
+                continue; /* this register of mine is behind the window */
             }
             const uint8_t byteIndex =
                 static_cast<uint8_t>(reg - FirstRegister); /* 0 = low byte */
@@ -114,7 +116,7 @@ struct RegisterField
     }
 };
 
-uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
+void PositionRegister::Read(uint8_t (&destination)[RegisterCount])
 {
     /* One capture per transaction: every byte below is served from these
        locals, never from the live fields, so position is read as a single
@@ -130,10 +132,12 @@ uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
         gearAngles[role] = _gearAngles[role];
     }
 
-    /* The register window the host asked for; the start pointer is clamped
-       to the map, so everything past RegisterCount is zero-filled. */
+    /* The window opens where the host's pointer says and always runs to the
+       end of the map, because how many of these bytes the master will clock
+       out is decided by the master (the shift register takes a prefix of
+       what was composed).  The pointer is clamped to the map, so a start
+       past the end zero-fills the whole buffer. */
     const uint16_t readStart = _registerPointer;
-    const uint16_t readEnd = static_cast<uint16_t>(readStart + maxBytes);
     uint8_t        bytesWritten = 0u;
 
     /* The whole map as one list of fields: the four fixed registers, then
@@ -163,19 +167,16 @@ uint8_t PositionRegister::Read(uint8_t* destination, uint8_t maxBytes)
 
     for (uint8_t field = 0u; field < fieldCount; field++)
     {
-        bytesWritten += fields[field].Serve(readStart, readEnd,
-                                            destination + bytesWritten);
+        bytesWritten +=
+            fields[field].Serve(readStart, destination + bytesWritten);
     }
-    while (bytesWritten < maxBytes)
+    while (bytesWritten < RegisterCount)
     {
         destination[bytesWritten] = 0u; /* past the map: zero-fill, never wraps */
         bytesWritten++;
     }
 
-    /* Auto-increment, stopping at the map end. */
-    const uint16_t nextPointer = static_cast<uint16_t>(readStart + bytesWritten);
-    _registerPointer = (nextPointer < RegisterCount)
-                           ? static_cast<uint8_t>(nextPointer)
-                           : RegisterCount;
-    return bytesWritten;
+    /* The read consumes the pointer: park it one past the map, so a read
+       that never wrote a pointer reads zeros instead of stale map bytes. */
+    _registerPointer = RegisterCount;
 }
