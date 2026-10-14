@@ -11,19 +11,32 @@
  * transport copies it with a single aligned load at address-match time,
  * so a host read can never observe a torn position even though the
  * sample updates at 1 kHz.  After the constant full-scale count
- * (MaxPosition, register 0x07) the map ends with each gear's own measured
+ * (MaxPosition, register 0x07) the map carries each gear's own measured
  * angle (register 0x0B): the raw per-wheel readings next to the decoded
- * result, so a host can see what the four MT6701s actually report.
+ * result, so a host can see what the four MT6701s actually report -- and
+ * behind them, one 8-byte diagnostics block per wheel (register 0x13):
+ * the cause of its last failed read, the raw chip status behind a
+ * magnetic cause, saturating per-cause failure counters and the seq of
+ * its last failure, so intermittent read failures can be diagnosed over
+ * the same two wires.
  */
 #include "i2c_pos.h"
 
 PositionRegister positionRegister;
+
+/* Failure counters saturate instead of wrapping: a host reading 0xFFFF
+   knows it means "at least 65,535", never a silent restart at zero. */
+static uint16_t SaturatingIncrement(uint16_t value)
+{
+    return (value == 0xFFFFu) ? value : static_cast<uint16_t>(value + 1u);
+}
 
 PositionRegister::PositionRegister()
     : _position(0u)
     , _status(0u)
     , _sampleCounter(0u)
     , _gearAngles{}
+    , _diagnostics{}
     , _registerPointer(0u)
 {
 }
@@ -37,17 +50,23 @@ void PositionRegister::Init()
     {
         _gearAngles[role] = 0u;
     }
+    for (uint8_t role = 0u; role < WheelCount; role++)
+    {
+        _diagnostics[role] = Diagnostics{0u, 0u, 0u, 0u, 0u};
+    }
     _registerPointer = 0u;
 }
 
 void PositionRegister::Update(const GearPosition& position,
-                              const GearAngles& angles, uint8_t readHealth)
+                              const GearAngles& angles,
+                              const ReadResult (&results)[WheelCount])
 {
     /* one aligned 32-bit store: a concurrent reader sees either the old or
        the new count, never a torn mix of turn and angle bytes */
     _position = static_cast<uint32_t>(position.Turns) * CountsPerTurn +
                 position.Angle;
     _sampleCounter++; /* liveness: +1 per sample, wraps (docs/i2c.md) */
+    const uint16_t seq = _sampleCounter; /* this sample's counter value */
 
     /* Each wheel's own angle, in EncoderRole order (Sun, Gear1..Gear3), so
        the raw readings sit next to the decoded position from the same
@@ -62,12 +81,39 @@ void PositionRegister::Update(const GearPosition& position,
         _gearAngles[role] = measuredAngles[role];
     }
 
+    /* The status byte and the diagnostics block come out of the same per-
+       wheel causes in this one pass, so the verdict a poller sees (health
+       bits 1..4) and the detail a debugger reads (block +0) can never
+       disagree.  A failure also bumps its cause's counter and stamps the
+       seq of the sample it happened on. */
+    uint8_t health = 0u;
+    for (uint8_t role = 0u; role < WheelCount; role++)
+    {
+        Diagnostics&      diag   = _diagnostics[role];
+        const ReadResult& result = results[role];
+        diag.Cause    = result.Cause;
+        diag.MgStatus = result.MgStatus;
+        if (result.Cause == CauseOk)
+        {
+            continue;
+        }
+        health |= HealthBit(static_cast<EncoderRole>(role));
+        if (result.Cause == CauseMagnetic)
+        {
+            diag.StatusFails = SaturatingIncrement(diag.StatusFails);
+        }
+        else
+        {
+            diag.FrameFails = SaturatingIncrement(diag.FrameFails);
+        }
+        diag.LastFailSeq = seq;
+    }
+
     /* one byte carries both verdicts, so they can never disagree:
        the valid bit only when every read succeeded and the slew guard
        accepted, plus one bit per failed encoder read (bits 1..4) */
     _status = static_cast<uint8_t>(
-        readHealth | ((position.IsValid && readHealth == 0u) ? StatusValid
-                                                             : 0u));
+        health | ((position.IsValid && health == 0u) ? StatusValid : 0u));
 }
 
 void PositionRegister::Select(uint8_t registerIndex)
@@ -131,6 +177,11 @@ void PositionRegister::Read(uint8_t (&destination)[RegisterCount])
     {
         gearAngles[role] = _gearAngles[role];
     }
+    Diagnostics diagnostics[WheelCount];
+    for (uint8_t role = 0u; role < WheelCount; role++)
+    {
+        diagnostics[role] = _diagnostics[role];
+    }
 
     /* The window opens where the host's pointer says and always runs to the
        end of the map, because how many of these bytes the master will clock
@@ -141,9 +192,10 @@ void PositionRegister::Read(uint8_t (&destination)[RegisterCount])
     uint8_t        bytesWritten = 0u;
 
     /* The whole map as one list of fields: the four fixed registers, then
-       one gear angle per role.  Adding a register = adding one line here.
-       The fields tile 0x00..RegisterCount (static_assert in i2c_pos.h), so
-       inside the window they serve exactly the bytes asked for. */
+       one gear angle per role, then five fields per diagnostics block.
+       Adding a register = adding one line here.  The fields tile
+       0x00..RegisterCount (static_assert in i2c_pos.h), so inside the
+       window they serve exactly the bytes asked for. */
     const RegisterField fixedFields[] = {
         {0x00u, 4u, position},
         {RegisterStatus, 1u, status},
@@ -152,8 +204,12 @@ void PositionRegister::Read(uint8_t (&destination)[RegisterCount])
     };
     static constexpr uint8_t fixedFieldCount = static_cast<uint8_t>(
         sizeof(fixedFields) / sizeof(fixedFields[0]));
+    static constexpr uint8_t diagnosticsFieldCount = 5u; /* cause, mg, two
+                                                            counters,
+                                                            last-fail seq */
 
-    RegisterField fields[fixedFieldCount + GearAngleCount];
+    RegisterField fields[fixedFieldCount + GearAngleCount +
+                         diagnosticsFieldCount * WheelCount];
     uint8_t       fieldCount = 0u;
     for (uint8_t field = 0u; field < fixedFieldCount; field++)
     {
@@ -163,6 +219,21 @@ void PositionRegister::Read(uint8_t (&destination)[RegisterCount])
     {
         fields[fieldCount++] = {GearAngleRegister(static_cast<EncoderRole>(role)),
                                 BytesPerGearAngle, gearAngles[role]};
+    }
+    for (uint8_t role = 0u; role < WheelCount; role++)
+    {
+        const Diagnostics& diag = diagnostics[role];
+        const uint8_t reg =
+            DiagnosticsRegister(static_cast<EncoderRole>(role));
+        fields[fieldCount++] = {reg, 1u, diag.Cause};
+        fields[fieldCount++] = {static_cast<uint8_t>(reg + 1u), 1u,
+                                diag.MgStatus};
+        fields[fieldCount++] = {static_cast<uint8_t>(reg + 2u), 2u,
+                                diag.FrameFails};
+        fields[fieldCount++] = {static_cast<uint8_t>(reg + 4u), 2u,
+                                diag.StatusFails};
+        fields[fieldCount++] = {static_cast<uint8_t>(reg + 6u), 2u,
+                                diag.LastFailSeq};
     }
 
     for (uint8_t field = 0u; field < fieldCount; field++)

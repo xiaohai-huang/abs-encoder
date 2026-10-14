@@ -7,6 +7,9 @@
  */
 #include "mt6701_slave_sim.h"
 
+#include <cstddef> /* size_t: explicit, not every libstdc++ leaks it via
+                      <cstdint> the way MinGW's does */
+
 #include "mt6701.h"
 
 namespace

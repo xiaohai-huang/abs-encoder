@@ -329,7 +329,11 @@ The I2C register map is the board's built-in test bench
    CSN) — see `docs/i2c-host-guide.md` for the full decode table.
    The gear-angle registers (`docs/i2c.md`, 0x0B..0x12) go further: each
    wheel's own live angle, so a driven angle that tracks at the wrong rate
-   points at that one wheel's magnet, mesh or gear.
+   points at that one wheel's magnet, mesh or gear.  The read-diagnostics
+   block (`docs/i2c.md`, 0x13..0x32) then names the cause outright —
+   `cause` 2 with `frameFails` climbing is electrical (wiring, dead chip),
+   `cause` 1 with `statusFails` climbing is the magnet, and its `mg` byte
+   separates track loss from a gap that is too strong or too weak.
    Remember the CRC-6 acceptance on real hardware is binary
    (`docs/MT6701.md`): every frame validates, or none do; if frames are
    garbage, the fallback experiment is SPI mode 2 — a CubeMX-only change.

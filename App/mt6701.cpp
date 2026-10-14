@@ -43,6 +43,7 @@ int Mt6701::ReadFrame(Hal& hal, EncoderRole encoder, uint8_t frame[BytesInFrame]
 
 int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
 {
+    sample.Status = FrameStatusUnknown; /* until a frame passes CRC-6 */
     if (encoder >= EncoderRole::RoleCount)
     {
         return ErrNoValidFrame;
@@ -68,6 +69,11 @@ int Mt6701::ReadSample(Hal& hal, EncoderRole encoder, Mt6701Sample& sample)
             (raw >> AngleFieldShift) & AngleFieldMask);
         uint8_t status = static_cast<uint8_t>(
             (raw >> StatusFieldShift) & RawStatusMask);
+
+        /* CRC-6 passed, so this frame's status is trustworthy whatever it
+           says -- keep it as the read's outcome (a fault below overwrites
+           nothing: it is the last CRC-valid frame either way) */
+        sample.Status = status;
 
         if ((status & StatusTrackLossMask) != 0u ||
             (status & StatusFieldMask) != 0u)

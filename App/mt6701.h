@@ -32,6 +32,14 @@ class Hal; /* platform backend, defined in hal.h; the MT6701 protocol only
 struct Mt6701Sample
 {
     uint16_t Angle; /* 0..16383 */
+
+    /** Raw chip status (Mg[3:0]) of the frame that decided this read: the
+     *  frame that succeeded, or the last CRC-valid frame that reported a
+     *  fault.  FrameStatusUnknown when no frame passed CRC-6 -- there is
+     *  then no trustworthy status to report (the read returns
+     *  ErrNoValidFrame).  Published on the host port as the diagnostics
+     *  block's mg byte (docs/i2c.md). */
+    uint8_t Status;
 };
 
 /** MT6701 SSI protocol layer; stateless, all calls are static. */
@@ -46,7 +54,9 @@ public:
      * Read one angle frame with status validation and retries.
      * @param hal     platform backend (SPI + clock + delay)
      * @param encoder encoder role (Sun, Gear1..3)
-     * @param sample  receives the resolved angle and button state
+     * @param sample  receives the resolved angle and the chip status of
+     *                the frame that decided the read (sample.Status;
+     *                FrameStatusUnknown when no frame passed CRC-6)
      * @return 0 on success, -1 if the chip reports a fault (track loss /
      *         bad field status), -2 if no valid frame arrived in time.
      */
@@ -66,6 +76,10 @@ public:
     static constexpr int Ok             = 0;
     static constexpr int ErrFault       = -1; /* chip reported track loss / bad field */
     static constexpr int ErrNoValidFrame = -2; /* bad role, or retries exhausted */
+
+    /** Mt6701Sample::Status when no frame passed CRC-6: the chips only
+     *  ever shift out a 4-bit status, so 0xFF cannot be a real one. */
+    static constexpr uint8_t FrameStatusUnknown = 0xFFu;
 
 private:
     static constexpr int  MaxReadRetries         = 3;

@@ -19,7 +19,7 @@ spec and its numbers are normative.
   the **host** PCB, to the host's 3.3 V rail — the encoder board ships
   with its pull-up footprints unpopulated (`docs/pcb-design-guide.md` §6).
 
-## Register map (11 bytes + the gear angles)
+## Register map (19 bytes + read diagnostics)
 
 | reg        | name   | meaning                                                       |
 |------------|--------|---------------------------------------------------------------|
@@ -28,6 +28,7 @@ spec and its numbers are normative.
 | 0x05..0x06 | seq    | sample counter, uint16 LE, +1 per 1 ms sample, wraps          |
 | 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735         |
 | 0x0B..0x12 | gears  | each gear's measured angle, uint16 LE (Sun, Gear1..Gear3)     |
+| 0x13..0x32 | diag   | per-wheel read diagnostics: cause, chip status, failure counters, last-failure seq (8 bytes per wheel) |
 
 Position is `turns * 16384 + angle`: turns 0..7428 from the gear phases,
 angle 0..16383 from the input shaft.  The count is continuous across the
@@ -62,6 +63,30 @@ Reading it is always three steps: write the register pointer you want
 bytes back (one combined transaction, or two separate ones — the pointer
 persists), interpret.
 
+### Wheel index (0..3)
+
+Everything on this map that comes "once per wheel" — the status health
+bits, the gear angles, the diagnostics blocks — shares one index, in
+EncoderRole order (the firmware's name for that fixed order).  The
+example code below passes it as the `wheel` argument, spelled
+`ENC_WHEEL_SUN`..`ENC_WHEEL_GEAR3`:
+
+| wheel | role  | wheel itself      | status bit | angle reg | diagnostics reg |
+|-------|-------|-------------------|------------|-----------|-----------------|
+| 0     | Sun   | 13T input shaft   | bit1 (`0x02`) | `0x0B` | `0x13` |
+| 1     | Gear1 | 17T driven gear   | bit2 (`0x04`) | `0x0D` | `0x1B` |
+| 2     | Gear2 | 19T driven gear   | bit3 (`0x08`) | `0x0F` | `0x23` |
+| 3     | Gear3 | 23T driven gear   | bit4 (`0x10`) | `0x11` | `0x2B` |
+
+For index `n`: gear angle = `0x0B + 2n`, diagnostics block = `0x13 + 8n`,
+health bit = `1 << (n + 1)`.  So `wheel = 2` (`ENC_WHEEL_GEAR2`) is
+always the 19-tooth gear: its angle reads at `0x0F`, its failure story
+lives at `0x23`, and its health bit is `0x08` in the status byte.  The
+tooth counts identify the physical wheel and come from the firmware's
+gearbox configuration (`App/gear_config.h`); which connector or pin a
+wheel sits behind is board wiring, not wire protocol
+(`docs/pcb-design-guide.md` §1).
+
 ### Each gear's own angle (0x0B..0x12)
 
 The four trailing registers hold the wheels' raw readings, for when `pos`
@@ -79,6 +104,42 @@ certified position, and a wheel whose read failed keeps its previous angle
 here — the status health bit names it, so a held value is never mistaken
 for a live one (wire-level details: `docs/i2c.md`; the hardware side:
 `docs/pcb-design-guide.md` §10).
+
+### Read diagnostics (0x13..0x32)
+
+When a status health bit trips, the eight bytes behind the gear angles
+say why: one block per wheel, in EncoderRole order — Sun at `0x13`,
+Gear1 at `0x1B`, Gear2 at `0x23`, Gear3 at `0x2B`:
+
+| offset    | name        | meaning                                                         |
+|-----------|-------------|-----------------------------------------------------------------|
+| +0        | cause       | 0 = read OK; 1 = magnetic fault (frame fine, chip unhappy with the magnet); 2 = no valid frame (CRC-6 failed every retry) |
+| +1        | mg          | the chip's raw status Mg[3:0] of that read: `0x08` track loss, `0x01` field too strong, `0x02` field too weak, `0xFF` = no CRC-valid frame |
+| +2..+3    | frameFails  | cause-2 samples since power-up, uint16 LE, saturates at 65,535  |
+| +4..+5    | statusFails | cause-1 samples since power-up, uint16 LE, saturates at 65,535  |
+| +6..+7    | lastFailSeq | `seq` when this wheel last failed, uint16 LE; 0 = never         |
+
+How to read it:
+
+- **cause 2 (frameFails climbing) is electrical** — wiring, noise,
+  connector, contention or a dead chip returning 0xFF.  **cause 1
+  (statusFails climbing) is magnetic** — and `mg` says which: gap wrong
+  (too strong / too weak) or the magnet gone (track loss).
+- The counters are cumulative since power-up and never reset (nothing on
+  this map is writable): an occasional failure and a chronic one differ
+  only in these numbers, so diff them between your polls to get a rate.
+- `lastFailSeq` lets you place the failure in time — correlate it with
+  the `seq`/`pos` history you keep to decide whether it happens at speed,
+  under load, or at one angle of the rotation.  It updates when that
+  wheel fails again; `seq` wraps every ~65 s, so compare it against a
+  `seq` you observed, not against wall time.
+- On any one sample, health bit set ⇔ that wheel's cause ≠ 0 (both are
+  derived from the same read), so the block always explains the byte at
+  `0x04` of the same transaction.
+
+Read 8 bytes from `0x13 + 8·wheel` for one wheel or 32 from `0x13` for
+all four; a 51-byte read from `0x00` captures position, status, seq and
+every block from one sample.
 
 ## Trust rules (read before writing code)
 
@@ -99,6 +160,10 @@ for a live one (wire-level details: `docs/i2c.md`; the hardware side:
   loop is dead and the value is stale — the one failure constant polling
   cannot detect any other way.  It wraps every ~65 s at 1 kHz: only
   compare "changed / unchanged", never the magnitude.
+- The diagnostics block (`0x13..0x32`) turns any health bit into a story:
+  `cause` says whether it was magnetic (1, see `mg`) or a dead frame (2),
+  the counters say whether it is one glitch or a chronic failure, and
+  `lastFailSeq` says when it happened (see the section above).
 
 The causes behind each rejection — and what to check first — are in
 [Troubleshooting](#troubleshooting-what-the-bytes-are-telling-you).
@@ -145,6 +210,14 @@ extern I2C_HandleTypeDef hi2c2; /* your master peripheral (CubeMX) */
 
 #define ENC_GEAR_ANGLE_LEN 2u   /* one uint16 per wheel */
 #define ENC_GEAR_ANGLE_COUNT 4u /* Sun, Gear1, Gear2, Gear3 */
+
+/* The shared wheel index (the "Wheel index" section): EncoderRole order,
+ * the same numbering behind the status health bits, the gear-angle
+ * registers and the `wheel` argument of EncoderReadWheelDiagnostics() */
+#define ENC_WHEEL_SUN   0u /* 13T input shaft: angle 0x0B, diag 0x13, bit1 */
+#define ENC_WHEEL_GEAR1 1u /* 17T driven:      angle 0x0D, diag 0x1B, bit2 */
+#define ENC_WHEEL_GEAR2 2u /* 19T driven:      angle 0x0F, diag 0x23, bit3 */
+#define ENC_WHEEL_GEAR3 3u /* 23T driven:      angle 0x11, diag 0x2B, bit4 */
 
 /* the polling snapshot: position + status + seq, in ONE transaction --
  * a transaction copies one snapshot, so the three always describe the
@@ -241,6 +314,51 @@ HAL_StatusTypeDef EncoderReadGearAngles(I2C_HandleTypeDef* hi2c,
     }
     return HAL_OK;
 }
+
+/* One wheel's read diagnostics: 8 bytes from pointer 0x13 + 8*wheel,
+ * where wheel is the shared index from the "Wheel index" section
+ * (ENC_WHEEL_SUN = 0x13 .. ENC_WHEEL_GEAR3 = 0x2B).  Call it when a
+ * status health bit trips: cause 1 = magnetic (mg says track loss 0x08 /
+ * field too strong 0x01 / too weak 0x02), 2 = no frame passed CRC-6.
+ * The counters saturate at 65535 and reset only on power-up; lastFailSeq
+ * is the seq value of that wheel's last failed sample (0 = never). */
+typedef struct
+{
+    uint8_t  Cause;      /* 0 = ok, 1 = magnetic, 2 = no valid frame */
+    uint8_t  MgStatus;   /* Mg[3:0], or 0xFF when the frame never validated */
+    uint16_t FrameFails; /* cause-2 samples since power-up (saturating) */
+    uint16_t StatusFails;/* cause-1 samples since power-up (saturating) */
+    uint16_t LastFailSeq;/* seq at the last failure, 0 = never */
+} EncoderWheelDiagnostics;
+
+HAL_StatusTypeDef EncoderReadWheelDiagnostics(I2C_HandleTypeDef* hi2c,
+                                              uint8_t wheel,
+                                              EncoderWheelDiagnostics* out)
+{
+    uint8_t frame[8];
+    uint8_t lo, hi;
+
+    if (HAL_I2C_Mem_Read(hi2c, ENC_ADDR,
+                         (uint8_t)(0x13u + 8u * wheel),
+                         I2C_MEMADD_SIZE_8BIT, frame, sizeof(frame),
+                         100u) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+    out->Cause = frame[0];
+    out->MgStatus = frame[1];
+    lo = frame[2];
+    hi = frame[3];
+    out->FrameFails = (uint16_t)((uint16_t)lo | ((uint16_t)hi << 8u));
+    lo = frame[4];
+    hi = frame[5];
+    out->StatusFails = (uint16_t)((uint16_t)lo | ((uint16_t)hi << 8u));
+    lo = frame[6];
+    hi = frame[7];
+    out->LastFailSeq = (uint16_t)((uint16_t)lo | ((uint16_t)hi << 8u));
+    return HAL_OK;
+}
 ```
 
 ### Using the snapshot (poll loop with the trust rules)
@@ -305,10 +423,11 @@ void PollEncoder(void)
 
 - **Partial reads are fine**: 4 bytes = position only, 5 = position +
   status, 7 = the poll frame, 11 = the main map; the four gear angles are
-  8 bytes from pointer `0x0B`.  Reading less than the full map never
-  disturbs later reads (the pointer advances, never wraps; past the map
-  everything reads 0).  The full-scale count is a 4-byte read at pointer
-  `0x07` on its own, which a poll never needs.
+  8 bytes from pointer `0x0B`, and one wheel's diagnostics are 8 bytes
+  from `0x13 + 8·wheel` (32 for all four).  Reading less than the full
+  map never disturbs later reads (the pointer advances, never wraps; past
+  the map everything reads 0).  The full-scale count is a 4-byte read at
+  pointer `0x07` on its own, which a poll never needs.
 - **Two transactions instead of one** also work — write the pointer, then
   read: `HAL_I2C_Master_Transmit(&hi2c2, ENC_ADDR, (uint8_t[]){0x00}, 1u,
   timeout)` followed by `HAL_I2C_Master_Receive(&hi2c2, ENC_ADDR, frame,
@@ -332,12 +451,16 @@ The status byte holds two independent detectors in one register: bits 1..4
 ask "did all four sensors answer cleanly?", the valid bit asks "is the
 decoded position physically possible?".  When both answer yes but the
 mechanics are still suspect, the gear angles (0x0B..0x12) answer the next
-question — "what does each wheel see?" — one register per wheel.  Start
-from the decision table, then follow the checklist.
+question — "what does each wheel see?" — one register per wheel, and the
+diagnostics block (0x13..0x32) answers "and why does its read fail?" —
+cause, chip status, failure counters and last-failure seq, also one block
+per wheel.  Start from the decision table, then follow the checklist.
 
 | you observe                                        | meaning                                   | most likely cause                                   |
 |----------------------------------------------------|-------------------------------------------|-----------------------------------------------------|
-| status bits 1..4 set, `seq` ticking                | one encoder read failed                   | wiring/EMC on that encoder's SSI lines, magnet problem, dead chip |
+| status bits 1..4 set, `seq` ticking                | one encoder read failed                   | read that wheel's `cause` byte: 2 = electrical (wiring/EMC/dead chip), 1 = magnet problem |
+| diag `cause` = 2 with `frameFails` climbing         | frames never pass CRC-6                   | marginal SSI wiring, noise, connector, chip stuck at 0xFF |
+| diag `cause` = 1 with `statusFails` climbing        | the chip keeps rejecting the magnet       | gap/alignment (`mg` 0x01 too strong, 0x02 too weak, 0x08 track loss) |
 | status = 0x1E                                      | all four reads failed                     | sensor farm power, shared bus wiring, multiple stuck chips |
 | status = 0x00                                      | reads clean, decode implausible           | transient tooth-slot misread; if persistent: mechanical or speed |
 | a gear angle tracks at the wrong rate for its gear | one wheel disagrees with the decode       | magnet, mesh or wrong gear on that wheel (see the gear-angle section) |
@@ -353,7 +476,11 @@ guide).
 ### A status health bit (bits 1..4) is set — that encoder's read failed
 
 The firmware checks each 24-bit frame twice: CRC-6 (did the bits arrive
-intact?) and the chip's own status bits (is the magnet happy?).  Failures:
+intact?) and the chip's own status bits (is the magnet happy?).  The
+diagnostics block already separates the two outcomes: read `cause` at
+`0x13 + 8·wheel` — **2 = the first group below (no frame), 1 = the
+second (magnetic)** — with `mg`, the failure counters and `lastFailSeq`
+for the detail.  Failures:
 
 - **CRC-6 mismatch on all retries — corrupted frame:**
   - marginal MISO/SCK/CSN wiring on that encoder (the set bit names it)

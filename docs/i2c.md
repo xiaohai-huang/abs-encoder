@@ -4,8 +4,9 @@ The decoded absolute position (docs/architecture.md) is exported as an I2C
 slave with a small register map, so any master on the bus can read the
 multi-turn position on demand.  Nothing is pushed: the encoder answers reads
 when addressed, like any encoder IC (AS5600-style).  Behind the position
-registers, one more register per gear carries that wheel's own angle, so a
-host can watch all four MT6701s individually (below).
+registers, one register per gear carries that wheel's own angle, and behind
+those, one 8-byte block per gear carries that wheel's read diagnostics —
+why its reads fail, how often, and when (below).
 
 > Engineers integrating a host master: the practical walk-through with
 > STM32 HAL example code is in **docs/i2c-host-guide.md**.  This file is
@@ -34,6 +35,7 @@ All registers are read-only, little-endian on the wire:
 | 0x05..0x06 | seq    | sample counter, uint16 LE: +1 per sample, wraps                |
 | 0x07..0x0A | max    | full-scale count, uint32 LE: the constant 121,716,735          |
 | 0x0B..0x12 | gears  | each wheel's measured angle, uint16 LE, one per role |
+| 0x13..0x32 | diag   | per-wheel read diagnostics: cause, chip status, failure counters, last-failure seq (8 bytes per wheel) |
 
 The status byte carries the whole sample verdict in one register: it
 reads exactly `0x01` when the last sample was **fresh and accepted** (all
@@ -42,6 +44,13 @@ any encoder whose read failed — bit1 = Sun, bit2 = Gear1, bit3 = Gear2,
 bit4 = Gear3 (EncoderRole order); `0x00` means all reads were clean but
 the slew guard rejected the decode.  `seq` increments once per sample
 whether the sample was accepted or not.
+
+That role order is also the map's **wheel index** 0..3, and it numbers
+every per-wheel view the same way — health bit `1 << (n+1)`, gear angle
+at `0x0B + 2n`, diagnostics block at `0x13 + 8n`, for n = 0 (Sun, 13T
+input shaft) .. 3 (Gear3, 23T; Gear1 = 17T, Gear2 = 19T).  Wheel 2 is
+therefore always the 19-tooth gear: status bit3 (`0x08`), angle `0x0F`,
+diagnostics `0x23`.
 
 The position count is the whole input-shaft travel in fine-angle steps:
 `counts = turns * 16384 + angle`, where `turns` (0 .. 7428) comes from the
@@ -78,7 +87,7 @@ computes these):
 
 | reg        | wheel | value                                          |
 |------------|-------|------------------------------------------------|
-| 0x0B..0x0C | Sun   | input shaft's fine angle, uint16 LE, 0 .. 16383 |
+| 0x0B..0x0C | Sun   | the 13-tooth input shaft's fine angle, uint16 LE, 0 .. 16383 |
 | 0x0D..0x0E | Gear1 | the 17-tooth wheel's fine angle                |
 | 0x0F..0x10 | Gear2 | the 19-tooth wheel's fine angle                |
 | 0x11..0x12 | Gear3 | the 23-tooth wheel's fine angle                |
@@ -98,12 +107,73 @@ wheel whose read failed keeps its previous angle here (there is no fresh
 measurement) — the status health bit names that wheel, so a held value is
 never mistaken for a live one.
 
+## Read diagnostics (0x13..0x32)
+
+One 8-byte block per wheel, in EncoderRole order — Sun at 0x13, Gear1 at
+0x1B, Gear2 at 0x23, Gear3 at 0x2B (`PositionRegister::DiagnosticsRegister`
+computes these).  The status byte says *that* a wheel's read failed; the
+block says *why, how often, and when*:
+
+| offset    | name        | meaning                                                                  |
+|-----------|-------------|--------------------------------------------------------------------------|
+| +0        | cause       | how that wheel's last read ended (table below)                           |
+| +1        | mg          | raw MT6701 status Mg[3:0] of the frame that decided the read; `0xFF` = no CRC-valid frame |
+| +2..+3    | frameFails  | samples that ended with cause 2 since power-up, uint16 LE, saturating    |
+| +4..+5    | statusFails | samples that ended with cause 1 since power-up, uint16 LE, saturating    |
+| +6..+7    | lastFailSeq | `seq` value of the last sample this wheel failed on, uint16 LE; 0 = never |
+
+The firmware validates every frame twice — CRC-6 first, then the chip's own
+status field (docs/MT6701.md) — and the two ways a read can fail are kept
+apart because they point at different hardware:
+
+| cause | name      | what happened                                             | points at                                          |
+|-------|-----------|-----------------------------------------------------------|----------------------------------------------------|
+| 0     | ok        | the read succeeded                                        | —                                                  |
+| 1     | magnetic  | frame passed CRC-6, but the chip reported track loss or bad field | magnet: gap, alignment, strength, missing magnet |
+| 2     | no frame  | no frame passed CRC-6 in the three retries                | electrical: wiring, noise, contention, dead chip   |
+
+`mg` decodes the status field of the frame that decided the read (raw
+Mg[3:0], docs/MT6701.md): bit3 = track loss, bits 1..0 = field strength
+(0 normal, 1 too strong, 2 too weak), bit2 = the push flag this firmware
+ignores.  Next to cause 1 it says *which* magnetic problem: `0x08` =
+track loss (magnet gone or too far), `0x01` = field too strong (gap too
+small), `0x02` = field too weak (gap too large).  `0xFF` means the sample
+produced no CRC-valid frame (cause 2), so there was no status to show;
+next to cause 0 it is the healthy frame's status, normally 0.
+
+The counters are cumulative since power-up and **saturate** at 65,535
+instead of wrapping — they are RAM state only (battery-free design: no
+persistent state), and a saturating counter never makes a chronic problem
+look like a fresh start.  Together the pair tells the failure rate *and*
+its mix: occasional `frameFails` are typical of noise, a climbing
+`statusFails` of a magnet walking out of range.  A host that polls
+periodically can diff them against its own clock to get a failure rate.
+
+`lastFailSeq` stamps the `seq` register (0x05) at the sample where the
+wheel last failed, so a host that also tracks seq (and `pos`) can locate
+the failure in time: is it tied to shaft speed, or to one spot in the
+rotation (an eccentric magnet)?  It holds until that wheel fails again
+and resets to 0 only on power-up.  `seq` wraps every ~65 s, so read it
+relative to a seq value you observed, never as an absolute timestamp.
+
+Consistency: the health bits at 0x04 (bits 1..4) and every cause byte are
+derived from the same per-wheel outcomes of the same sample — a health
+bit set ⇔ that wheel's cause ≠ 0 in the same transaction.  So reading the
+block turns "Gear2's read failed" into "Gear2 failed on a magnetic fault
+(mg 0x02, field too weak) — its 47th status failure, last seen at seq
+12,340".
+
+Read them like the gear angles: 8 bytes from pointer `0x13 + 8·wheel`
+diagnoses one wheel, 32 bytes from `0x13` gets all four — and, like the
+rest of the map, one transaction is one sample, so cause/counters/seq of a
+51-byte read from `0x00` agree with pos/status/seq of that same read.
+
 ## Transactions (EEPROM-style)
 
-- **Write** (1 byte): sets the register pointer (`0x00`..`0x12`; anything
+- **Write** (1 byte): sets the register pointer (`0x00`..`0x32`; anything
   past the map clamps to it, reads then return 0x00).
 - **Read**: serves bytes starting at the register pointer and
-  auto-increments; once past 0x12 every byte reads 0x00 (no wrap).
+  auto-increments; once past 0x32 every byte reads 0x00 (no wrap).
 
 Read the whole snapshot with a combined transaction:
 
@@ -111,12 +181,15 @@ Read the whole snapshot with a combined transaction:
 write 0xA0, byte 0x00,    <- register pointer
 (repeated start)
 read  0xA1, 11 bytes      <- main map: position (4) + status + seq (2) + max (4)
-                             (19 bytes = the whole map, + the four gear angles)
+                             (19 bytes = through the gear angles at 0x12,
+                              51 = the whole map incl. diagnostics at 0x32)
 ```
 
 Common patterns: 4 bytes = position only; 5 = position + status; 7 = the
 poll frame (position + status + seq); 11 = the main map; 8 = the four gear
-angles from `0x0B` (one uint16 per wheel, role order); 19 = everything.
+angles from `0x0B` (one uint16 per wheel, role order); 8 from `0x13` = one
+wheel's diagnostics (32 = all four); 19 = position through the gear
+angles; 51 = the whole map.
 The full-scale count on its own is 4 bytes from pointer `0x07`, which is
 how a host reads it once at startup.
 Writing the pointer and reading it in two separate transactions works too.
@@ -133,7 +206,10 @@ a healthy one, which is what `seq` is for), and `max` is left out
 because it is a constant the host reads once at startup.  The gear angles
 obey the same rule: read them in the same transaction as `pos` when you
 want to compare a wheel against the decode, and leave them out of a poll
-that only needs the certified count.
+that only needs the certified count.  The diagnostics block likewise
+describes the sample it is read with — pull it in the same transaction
+when a health bit has caught your attention, so the cause you read names
+the same sample that raised the bit.
 
 ## Behaviour notes
 
@@ -154,8 +230,8 @@ that only needs the certified count.
   at rest" from "sampling died".  A read that crosses a wrap simply sees
   the new (lower) count; no transaction ever tears, because the whole map
   is copied at address-match time.
-- Before the first sample the map reads all zeros (including `seq` and
-  the gear angles) and `status.valid = 0`.
+- Before the first sample the map reads all zeros (including `seq`, the
+  gear angles and the diagnostics counters) and `status.valid = 0`.
 - The address, once configured, survives CubeMX regeneration: the generated
   `i2c.c` keeps `OwnAddress1 = 0`; `hal_stm32.cpp` applies `PositionRegister::Address` at
   runtime during `hal.Init()`.
@@ -172,6 +248,19 @@ that only needs the certified count.
   (docs/pcb-design-guide.md §10) — no SWD session, no special firmware, no
   extra sensor traffic: the angles are copied from the sample that was
   taken anyway, and a host that does not read them pays nothing.
+- **The two failure causes stay apart.** Every frame is checked twice
+  (CRC-6, then the chip's status), and a `frameFails`/`statusFails` split
+  plus the cause byte preserve that distinction on the wire: "no valid
+  frame" and "magnetic fault" have different physical causes, so merging
+  them into one failure bit would throw away the answer the diagnostics
+  exist to give.  The raw Mg status rides along so a magnetic fault can be
+  narrowed to track loss vs field too strong/too weak without an SWD
+  session.
+- **Failure history is RAM, saturating, read-only.** Counters reset on
+  power-up (the battery-free principle forbids persistent state) and
+  saturate at 0xFFFF rather than wrap (a wrapped counter would read as a
+  sudden recovery), and no host can clear them — the map stays a pure
+  view of what the device is doing.
 - **No calibration or reset in firmware.** The decoded position is absolute
   — it never needs an initial "home" write, and the battery-free principle
   (no persistent state, docs/architecture.md) forbids storing an offset on
