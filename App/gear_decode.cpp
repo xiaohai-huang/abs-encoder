@@ -4,10 +4,27 @@
  *        are declared in gear_config.h).
  *
  * HOW IT WORKS (plain language):
- *   1. Each sensor gives a raw angle (0..16383). Convert to a tooth number.
- *   2. Multiply each tooth number by its precomputed inverse so it represents
- *      the sun gear's turn count modulo that gear's tooth count.
- *   3. Combine the three residues via CRT into one absolute turn count.
+ *   1. Each MT6701 measures one revolution of its gear.  Scaled by the tooth
+ *      count, that angle gives how far the gear has advanced in teeth.  At
+ *      input position N + theta the gear is pushed by InputTeeth * (N + theta)
+ *      teeth, so the decoder first removes the sun's own within-turn share,
+ *      InputTeeth * theta (read by the Sun encoder).  What remains is the
+ *      input teeth passed by whole turns, modulo that gear's tooth count:
+ *
+ *        tooth_i = (N * InputTeeth) mod teeth_i
+ *
+ *   2. The Chinese Remainder Theorem combines the three tooth numbers into
+ *      the unique number of input teeth that have passed, modulo the turn
+ *      range M.  With spotlights e_i -- 1 modulo teeth_i, 0 modulo the other
+ *      two -- the whole CRT is one weighted sum:
+ *
+ *        y = (sum tooth_i * e_i) mod M
+ *
+ *   3. y counts input teeth, so one modular multiply turns it into input
+ *      turns; the multiplier is inverse(InputTeeth mod M):
+ *
+ *        N = y * inverse(InputTeeth, M) mod M
+ *
  *   4. Reject physically impossible jumps (slew guard).
  */
 #include "gear_decode.h"
@@ -40,89 +57,130 @@ static uint32_t GreatestCommonDivisor(uint32_t first, uint32_t second)
 }
 
 /**
- * Modular inverse of 'number' mod 'modulus' for small moduli.
- * Returns 0 if no inverse exists (not coprime).
+ * Modular inverse of 'number' mod 'modulus' via the extended Euclidean
+ * algorithm.  Returns 0 when no inverse exists (not coprime).
  */
 static uint16_t ComputeModularInverse(uint32_t number, uint32_t modulus)
 {
-    for (uint32_t candidate = 1u; candidate < modulus; candidate++)
+    int32_t modulusSigned = static_cast<int32_t>(modulus);
+    int32_t oldRemainder = static_cast<int32_t>(number % modulus);
+    int32_t remainder = modulusSigned;
+    int32_t oldCoefficient = 1; /* coefficient of 'number' in oldRemainder */
+    int32_t coefficient = 0;
+
+    while (remainder != 0)
     {
-        if ((number * candidate) % modulus == 1u)
-        {
-            return static_cast<uint16_t>(candidate);
-        }
+        int32_t quotient = oldRemainder / remainder;
+
+        int32_t nextRemainder = oldRemainder - quotient * remainder;
+        oldRemainder = remainder;
+        remainder = nextRemainder;
+
+        int32_t nextCoefficient = oldCoefficient - quotient * coefficient;
+        oldCoefficient = coefficient;
+        coefficient = nextCoefficient;
     }
-    return 0u;
+
+    if (oldRemainder != 1)
+    {
+        return 0u; /* not coprime */
+    }
+    return static_cast<uint16_t>(
+        (oldCoefficient % modulusSigned + modulusSigned) % modulusSigned);
 }
 
 /**
- * Combine two residues into one value via CRT.
- * Returns the unique N in [0, modulusA * modulusB) satisfying:
- *   N ≡ residueA (mod modulusA)
- *   N ≡ residueB (mod modulusB)
+ * CRT spotlight for one driven gear: the number that is congruent to 1
+ * modulo that gear's teeth and to 0 modulo the other gears' tooth counts.
+ *
+ *   e = (M / teeth) * inverse(M / teeth mod teeth)
+ *
+ * M / teeth already contains the other tooth counts, so it vanishes on their
+ * clocks; multiplying by its inverse makes it read 1 on its own.
  */
-static uint32_t CombineTwoResidues(uint32_t residueA, uint32_t modulusA,
-                                   uint32_t residueB, uint32_t modulusB)
+static uint16_t ComputeSpotlight(uint16_t teeth)
 {
-    uint32_t difference =
-        (residueB + modulusB - (residueA % modulusB)) % modulusB;
-    uint32_t multiplier =
-        difference * ComputeModularInverse(modulusA % modulusB, modulusB) %
-        modulusB;
-    return residueA + modulusA * multiplier;
+    uint32_t cofactor = GearConfig::TurnRange / teeth;
+    uint16_t inverse = ComputeModularInverse(cofactor, teeth);
+
+    /* inverse < teeth, so cofactor * inverse < M: already reduced. */
+    return static_cast<uint16_t>(cofactor * inverse);
+}
+
+/**
+ * Tooth number of one driven gear: the raw angle scaled to the gear's teeth,
+ * with the sun's within-turn motion removed, then rounded to the nearest
+ * tooth.  Without the subtraction, the fraction of the current turn that the
+ * driven gears have already travelled would be mistaken for whole turns (see
+ * the file overview).
+ *
+ * The raw angle is scaled by `teeth` (1/SensorMaxCount tooth units); the sun
+ * contributes InputTeeth * sunSensorCount of the same units, because one sun
+ * turn advances every driven gear by InputTeeth teeth.
+ */
+static uint16_t ComputeToothNumber(uint16_t rawSensorCount, uint16_t teeth,
+                                   uint16_t sunSensorCount)
+{
+    int32_t toothOffset =
+        static_cast<int32_t>(rawSensorCount) * teeth -
+        static_cast<int32_t>(GearConfig::InputTeeth) * sunSensorCount;
+
+    /* Round to the nearest tooth (half away from zero), then wrap into
+     * [0, teeth): a reading at the top of the circle maps to tooth 0. */
+    int32_t halfSensorRange = SensorMaxCount / 2;
+    int32_t toothNumber;
+    if (toothOffset >= 0)
+    {
+        toothNumber = (toothOffset + halfSensorRange) / SensorMaxCount;
+    }
+    else
+    {
+        toothNumber = -((-toothOffset + halfSensorRange) / SensorMaxCount);
+    }
+
+    toothNumber %= teeth;
+    if (toothNumber < 0)
+    {
+        toothNumber += teeth;
+    }
+    return static_cast<uint16_t>(toothNumber);
 }
 
 /**
  * Convert three raw sensor readings into an absolute sun-gear turn count.
  *
- * @param rawSensorCounts         Array of 3 raw encoder counts (0..16383),
- *                                ordered as gear1, gear2, gear3.
- * @param inputTeethInversePerGear Precomputed modular inverse of the input
- *                                teeth per driven gear (see ValidateGeometry).
+ * @param rawSensorCounts   Raw encoder counts (0..16383), ordered as
+ *                          gear1, gear2, gear3.
+ * @param spotlights        Precomputed CRT spotlights, same order.
+ * @param inputTeethInverse inverse(InputTeeth) modulo TurnRange.
+ * @param sunSensorCount    Raw sun angle (0..16383); its within-turn share
+ *                          of the driven gears' motion is removed first.
  * @return Absolute turn count in [0, GearConfig::TurnRange).
  */
 static uint16_t ComputeAbsoluteTurns(
     const uint16_t rawSensorCounts[GearConfig::DrivenCount],
-    const uint16_t inputTeethInversePerGear[GearConfig::DrivenCount])
+    const uint16_t spotlights[GearConfig::DrivenCount],
+    uint16_t inputTeethInverse, uint16_t sunSensorCount)
 {
-    uint32_t sunTurnResidues[GearConfig::DrivenCount];
-
-    /* Step 1 & 2: Convert each raw reading → sun turn residue */
+    /* CRT: weight each tooth number by its gear's spotlight and add.  On
+     * gear i's own clock the other spotlights are 0 and its own is 1, so
+     * the sum reads tooth number i there -- all three clues at once. */
+    uint32_t inputTeethPassed = 0u;
     for (size_t i = 0u; i < GearConfig::DrivenCount; i++)
     {
-        /* Scale raw count to tooth position with rounding */
-        uint32_t scaledCount =
-            static_cast<uint32_t>(rawSensorCounts[i]) *
-            GearConfig::DrivenTeethCounts[i];
-        uint32_t toothNumber =
-            ((scaledCount + SensorMaxCount / 2u) / SensorMaxCount) %
-            GearConfig::DrivenTeethCounts[i];
-
-        /* Convert gear tooth → sun turn count mod gear teeth */
-        sunTurnResidues[i] =
-            (toothNumber * inputTeethInversePerGear[i]) %
-            GearConfig::DrivenTeethCounts[i];
+        uint16_t toothNumber =
+            ComputeToothNumber(rawSensorCounts[i],
+                               GearConfig::DrivenTeethCounts[i],
+                               sunSensorCount);
+        inputTeethPassed += static_cast<uint32_t>(toothNumber) * spotlights[i];
     }
+    inputTeethPassed %= GearConfig::TurnRange;
 
-    /* Step 3: CRT — combine pairwise */
-    uint32_t combinedPair = CombineTwoResidues(
-        sunTurnResidues[0], GearConfig::DrivenTeethCounts[0],
-        sunTurnResidues[1], GearConfig::DrivenTeethCounts[1]);
-    uint32_t pairModulus = static_cast<uint32_t>(
-        GearConfig::DrivenTeethCounts[0] * GearConfig::DrivenTeethCounts[1]);
-
-    /* Extend to third gear */
-    uint32_t thirdModulus = GearConfig::DrivenTeethCounts[2];
-    uint32_t thirdDifference =
-        ((sunTurnResidues[2] + thirdModulus) - (combinedPair % thirdModulus)) %
-        thirdModulus;
-    uint32_t thirdMultiplier =
-        thirdDifference *
-        ComputeModularInverse(pairModulus % thirdModulus, thirdModulus) %
-        thirdModulus;
-    uint32_t absoluteTurns = combinedPair + pairModulus * thirdMultiplier;
-
-    return static_cast<uint16_t>(absoluteTurns);
+    /* The sum counts input teeth; dividing by the input tooth count gives
+     * turns.  InputTeeth is coprime with the range, so the division is an
+     * exact modular multiply. */
+    return static_cast<uint16_t>(inputTeethPassed * inputTeethInverse %
+                                 GearConfig::TurnRange);
 }
 
 /* ---------- GearDecoder ---------- */
@@ -131,9 +189,22 @@ GearDecoder::GearDecoder()
     : _initialized(false)
     , _lastAcceptedTurns(0u)
     , _hasPreviousReading(false)
-    , _inputTeethInversePerGear{}
+    , _spotlights{}
+    , _inputTeethInverse(0u)
 {
     _initialized = ValidateGeometry();
+    if (!_initialized)
+    {
+        return;
+    }
+
+    /* Geometry fixed at compile time: derive the CRT weights once. */
+    for (size_t i = 0u; i < GearConfig::DrivenCount; i++)
+    {
+        _spotlights[i] = ComputeSpotlight(GearConfig::DrivenTeethCounts[i]);
+    }
+    _inputTeethInverse =
+        ComputeModularInverse(GearConfig::InputTeeth, GearConfig::TurnRange);
 }
 
 bool GearDecoder::IsInitialized() const
@@ -145,7 +216,7 @@ bool GearDecoder::ValidateGeometry()
 {
     for (size_t i = 0u; i < GearConfig::DrivenCount; i++)
     {
-        /* Every pair of driven gears must be coprime */
+        /* CRT moduli: every pair of driven gears must be coprime. */
         for (size_t j = i + 1u; j < GearConfig::DrivenCount; j++)
         {
             if (GreatestCommonDivisor(GearConfig::DrivenTeethCounts[i],
@@ -154,17 +225,10 @@ bool GearDecoder::ValidateGeometry()
                 return false;
             }
         }
-        /* Input (sun) teeth must be coprime with each driven gear */
+        /* The final division by the input count needs it invertible too:
+         * coprime with every driven count (and so with their product). */
         if (GreatestCommonDivisor(GearConfig::InputTeeth,
                                   GearConfig::DrivenTeethCounts[i]) != 1u)
-        {
-            return false;
-        }
-        /* Precompute the inverse for this gear */
-        _inputTeethInversePerGear[i] = ComputeModularInverse(
-            GearConfig::InputTeeth % GearConfig::DrivenTeethCounts[i],
-            GearConfig::DrivenTeethCounts[i]);
-        if (_inputTeethInversePerGear[i] == 0u)
         {
             return false;
         }
@@ -193,9 +257,10 @@ GearPosition GearDecoder::Decode(const GearAngles& angles)
     const uint16_t rawSensorCounts[GearConfig::DrivenCount] = {
         angles.Gear1, angles.Gear2, angles.Gear3};
 
-    /* Decode absolute turn count from three driven-gear sensors */
-    uint16_t currentTurns =
-        ComputeAbsoluteTurns(rawSensorCounts, _inputTeethInversePerGear);
+    /* Decode the absolute turn count; the sun angle strips the driven gears'
+     * within-turn motion before the CRT. */
+    uint16_t currentTurns = ComputeAbsoluteTurns(
+        rawSensorCounts, _spotlights, _inputTeethInverse, angles.Sun);
     result.Turns = currentTurns;
 
     /* Step 4: Slew guard — reject physically impossible jumps */

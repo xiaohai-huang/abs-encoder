@@ -44,9 +44,10 @@ struct GearPosition
  * Absolute multi-turn decoder.
  *
  * The constructor validates the configured tooth counts (pairwise coprime
- * among the driven gears and with the input count); decoding stays
- * disabled until that passes (Decode reports invalid, and IsInitialized
- * exposes the geometry check result to the caller).
+ * among the driven gears and with the input count) and derives the CRT
+ * spotlights; decoding stays disabled until that passes (Decode reports
+ * invalid, and IsInitialized exposes the geometry check result to the
+ * caller).
  */
 class GearDecoder
 {
@@ -61,6 +62,9 @@ public:
 
     /**
      * Decode one set of four angle samples into the absolute position.
+     * The sun angle is part of the solve: the driven gears also move with
+     * the within-turn angle, so it is removed from their readings before
+     * the turn count is recovered.
      * @param angles angle counts by role (.Sun, .Gear1..3).
      * @return position; .IsValid is false when the decoded position would
      *         jump more than GearConfig::MaxTurnsDelta from the previous
@@ -77,7 +81,14 @@ private:
     bool     _initialized;
     uint16_t _lastAcceptedTurns;
     bool     _hasPreviousReading;
-    uint16_t _inputTeethInversePerGear[GearConfig::DrivenCount];
+
+    /* CRT spotlights: 1 modulo their own gear's tooth count, 0 modulo the
+     * other two; built in the constructor. */
+    uint16_t _spotlights[GearConfig::DrivenCount];
+
+    /* inverse(InputTeeth) modulo TurnRange: turns the CRT's input-teeth
+     * count into input revolutions. */
+    uint16_t _inputTeethInverse;
 };
 
 #endif /* APP_GEAR_DECODE_H */

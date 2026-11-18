@@ -193,33 +193,51 @@ static uint16_t ComputeGearAngle(uint32_t inputCounts, uint32_t gearTeeth)
 static void TestGearDecodeReadPath()
 {
     std::printf("gear decode via the real SSI read path (roles Sun..Gear3)\n");
-    GearDecoder decoder;
 
-    /* a whole train at 4000 turns + 333 counts of the input: every wheel
-       sits at its exact phase at that input position */
-    const uint32_t inputCounts = 4000u * 16384u + 333u;
-    Mt6701SlaveSim::SetAngle(EncoderRole::Sun, 333u);
-    Mt6701SlaveSim::SetAngle(EncoderRole::Gear1,
-                             ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[0]));
-    Mt6701SlaveSim::SetAngle(EncoderRole::Gear2,
-                             ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[1]));
-    Mt6701SlaveSim::SetAngle(EncoderRole::Gear3,
-                             ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[2]));
+    /* The whole train at 4000 turns plus several within-turn angles: the Sun
+       chip reports the angle, the driven chips report the phases that angle
+       produces.  A fresh decoder per position keeps the slew guard from
+       hiding a wrong decode. */
+    const uint32_t turns = 4000u;
+    const uint16_t sunAngles[] = {333u, 4096u, 8192u, 12000u, 16383u};
+    for (size_t angleIndex = 0u;
+         angleIndex < sizeof(sunAngles) / sizeof(sunAngles[0]); angleIndex++)
+    {
+        const uint32_t inputCounts = turns * 16384u + sunAngles[angleIndex];
+        Mt6701SlaveSim::SetAngle(EncoderRole::Sun, sunAngles[angleIndex]);
+        Mt6701SlaveSim::SetAngle(
+            EncoderRole::Gear1,
+            ComputeGearAngle(inputCounts,
+                             GearConfig::DrivenTeethCounts[0]));
+        Mt6701SlaveSim::SetAngle(
+            EncoderRole::Gear2,
+            ComputeGearAngle(inputCounts,
+                             GearConfig::DrivenTeethCounts[1]));
+        Mt6701SlaveSim::SetAngle(
+            EncoderRole::Gear3,
+            ComputeGearAngle(inputCounts,
+                             GearConfig::DrivenTeethCounts[2]));
 
-    GearAngles angles;
-    Mt6701Sample sample;
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == 0);
-    angles.Sun = sample.Angle;
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == 0);
-    angles.Gear1 = sample.Angle;
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear2, sample) == 0);
-    angles.Gear2 = sample.Angle;
-    CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == 0);
-    angles.Gear3 = sample.Angle;
+        GearAngles angles;
+        Mt6701Sample sample;
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == 0);
+        angles.Sun = sample.Angle;
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == 0);
+        angles.Gear1 = sample.Angle;
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear2, sample) == 0);
+        angles.Gear2 = sample.Angle;
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == 0);
+        angles.Gear3 = sample.Angle;
 
-    GearPosition position = decoder.Decode(angles);
-    CHECK(position.IsValid);
-    CHECK(position.Turns == 4000u);
+        GearDecoder decoder;
+        GearPosition position = decoder.Decode(angles);
+        std::printf("  %u turns + %5u/16384 -> decoded %u turns (valid %d)\n",
+                    turns, sunAngles[angleIndex], position.Turns,
+                    position.IsValid ? 1 : 0);
+        CHECK(position.IsValid);
+        CHECK(position.Turns == turns);
+        CHECK(position.Angle == sunAngles[angleIndex]);
+    }
 }
 
 static void TestI2cPosition()
