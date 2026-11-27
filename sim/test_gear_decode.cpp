@@ -64,6 +64,22 @@ static GearAngles CreateAnglesFor(uint32_t turns)
     return CreateAnglesAt(turns, 0u);
 }
 
+/* All four readings with the input shaft `shaftCounts` past zero (1/16384
+ * input revolution).  This is the plant, not the decoder: a driven wheel
+ * turns InputTeeth/teeth revolutions per input revolution, and each chip
+ * reports its own wheel's angle. */
+static GearAngles ShaftAngles(uint32_t shaftCounts)
+{
+    return CreateAnglesAt(shaftCounts / 16384u,
+                          static_cast<uint16_t>(shaftCounts % 16384u));
+}
+
+/* Decoded position as one continuous shaft count, turns * 16384 + angle. */
+static uint32_t DecodedShaftCounts(const GearPosition& position)
+{
+    return static_cast<uint32_t>(position.Turns) * 16384u + position.Angle;
+}
+
 /* Decode one sample with a fresh decoder -- with no previous reading the
  * slew guard cannot hide a wrong decode -- and report the decoded values
  * when the position is wrong. */
@@ -264,6 +280,246 @@ static void TestMidTurnTracking()
     GearPosition position = decoder.Decode(nextTurn);
     CHECK(position.IsValid);
     CHECK(position.Turns == turns + 1u);
+}
+
+/* Power-up anywhere in the range: the first sample after reset has no
+ * history, so it alone must decode to the absolute position. */
+static void TestPowerUpAnywhere()
+{
+    std::printf("power-up at every turn in the range\n");
+    const uint16_t sunAngles[] = {0u, 1234u, 8191u, Mt6701::AngleMax};
+    for (uint32_t turns = 0u; turns < GearConfig::TurnRange; turns++)
+    {
+        for (size_t angleIndex = 0u;
+             angleIndex < sizeof(sunAngles) / sizeof(sunAngles[0]);
+             angleIndex++)
+        {
+            CheckDecodeAt(turns, sunAngles[angleIndex]);
+        }
+    }
+}
+
+/* A shaft standing at every possible within-turn angle.  The de-rotation
+ * must recover the same turn count for all 16384 angular positions. */
+static void TestAllWithinTurnAngles()
+{
+    std::printf("all 16384 within-turn angles decode\n");
+    const uint32_t turnCounts[] = {0u, 4000u, GearConfig::TurnRange - 1u};
+    for (size_t turnIndex = 0u;
+         turnIndex < sizeof(turnCounts) / sizeof(turnCounts[0]); turnIndex++)
+    {
+        for (uint32_t sunCount = 0u; sunCount <= Mt6701::AngleMax; sunCount++)
+        {
+            CheckDecodeAt(turnCounts[turnIndex],
+                          static_cast<uint16_t>(sunCount));
+        }
+    }
+}
+
+/* 1 kHz samples of a turning shaft: each sample must land exactly on the
+ * shaft position, forward and backward, across turn boundaries and the
+ * 7429-turn seam.  Rates are far below the configured slew limit. */
+static void TestContinuousRotation()
+{
+    std::printf("1 kHz samples track a turning shaft in both directions\n");
+    const uint32_t shaftRange = GearConfig::TurnRange * 16384u;
+    const uint32_t rates[] = {1u, 1000u};
+
+    for (size_t rateIndex = 0u;
+         rateIndex < sizeof(rates) / sizeof(rates[0]); rateIndex++)
+    {
+        const uint32_t rate = rates[rateIndex];
+
+        /* Forward, starting just before the seam. */
+        GearDecoder decoder;
+        uint32_t shaft = (GearConfig::TurnRange - 1u) * 16384u + 5000u;
+        for (uint32_t step = 0u; step < 20000u; step++)
+        {
+            shaft = (shaft + rate) % shaftRange;
+            GearPosition position = decoder.Decode(ShaftAngles(shaft));
+            CHECK(position.IsValid);
+            CHECK(DecodedShaftCounts(position) == shaft);
+        }
+
+        /* Backward, starting just after zero. */
+        decoder.Reset();
+        shaft = 5000u;
+        for (uint32_t step = 0u; step < 20000u; step++)
+        {
+            shaft = (shaft + shaftRange - rate) % shaftRange;
+            GearPosition position = decoder.Decode(ShaftAngles(shaft));
+            CHECK(position.IsValid);
+            CHECK(DecodedShaftCounts(position) == shaft);
+        }
+    }
+
+    /* Exactly MaxTurnsDelta turns between samples is the fastest step the
+     * guard accepts (the configured limit). */
+    GearDecoder decoder;
+    uint32_t shaft = 4000u * 16384u + 1000u;
+    CHECK(decoder.Decode(ShaftAngles(shaft)).IsValid);
+    shaft = (shaft + GearConfig::MaxTurnsDelta * 16384u) % shaftRange;
+    GearPosition position = decoder.Decode(ShaftAngles(shaft));
+    CHECK(position.IsValid);
+    CHECK(position.Turns == 4000u + GearConfig::MaxTurnsDelta);
+}
+
+/* Deterministic last-bit jitter, -4 .. +4 counts. */
+static uint32_t _noiseState = 1u;
+
+static int32_t NextNoiseCount()
+{
+    _noiseState = _noiseState * 1664525u + 1013904223u;
+    return static_cast<int32_t>((_noiseState >> 16) % 9u) - 4;
+}
+
+/* A stationary shaft with independent jitter on all four chips: the tooth
+ * rounding must absorb it, and .Angle is the live Sun reading. */
+static void TestSensorNoise()
+{
+    std::printf("per-chip jitter is absorbed by the tooth slot\n");
+    const uint16_t sunAngles[] = {3000u, 7000u, 11000u, 15000u};
+    const uint32_t turnCounts[] = {0u, 1234u, 4000u,
+                                   GearConfig::TurnRange - 1u};
+
+    for (size_t turnIndex = 0u;
+         turnIndex < sizeof(turnCounts) / sizeof(turnCounts[0]); turnIndex++)
+    {
+        for (size_t angleIndex = 0u;
+             angleIndex < sizeof(sunAngles) / sizeof(sunAngles[0]);
+             angleIndex++)
+        {
+            GearAngles clean =
+                CreateAnglesAt(turnCounts[turnIndex], sunAngles[angleIndex]);
+            GearDecoder decoder;
+            for (uint32_t sample = 0u; sample < 200u; sample++)
+            {
+                GearAngles noisy = clean;
+                noisy.Sun = AddOffset(noisy.Sun, NextNoiseCount());
+                noisy.Gear1 = AddOffset(noisy.Gear1, NextNoiseCount());
+                noisy.Gear2 = AddOffset(noisy.Gear2, NextNoiseCount());
+                noisy.Gear3 = AddOffset(noisy.Gear3, NextNoiseCount());
+
+                GearPosition position = decoder.Decode(noisy);
+                CHECK(position.IsValid);
+                CHECK(position.Turns == turnCounts[turnIndex]);
+                CHECK(position.Angle == noisy.Sun);
+            }
+        }
+    }
+}
+
+/* The four chips are read one after another, so one sample is a tuple from
+ * slightly different instants.  At 1 kHz and 1000 counts/sample an SPI
+ * frame is ~24 counts of shaft motion: a 72-count skew across the tuple is
+ * 0.06 tooth and must decode exactly.  A whole stale chip is a one-tooth
+ * slip and must be rejected. */
+static void TestReadSkew()
+{
+    std::printf("sequential reads: small skew decodes, a stale chip is rejected\n");
+    const uint32_t shaft = 4000u * 16384u + 5000u;
+    const uint32_t skew = 24u;
+
+    GearAngles skewed;
+    skewed.Sun = static_cast<uint16_t>(shaft % 16384u);
+    skewed.Gear1 =
+        ComputeGearAngle(shaft + skew, GearConfig::DrivenTeethCounts[0]);
+    skewed.Gear2 =
+        ComputeGearAngle(shaft + 2u * skew, GearConfig::DrivenTeethCounts[1]);
+    skewed.Gear3 =
+        ComputeGearAngle(shaft + 3u * skew, GearConfig::DrivenTeethCounts[2]);
+
+    GearDecoder decoder;
+    GearPosition position = decoder.Decode(skewed);
+    CHECK(position.IsValid);
+    CHECK(position.Turns == 4000u);
+    CHECK(position.Angle == skewed.Sun);
+
+    /* The shaft advances one driven tooth while one chip's reading is a
+     * whole sample old: the tooth slips by one, which decodes hundreds of
+     * turns away, so the guard must reject it. */
+    const uint32_t oneInputTooth = 16384u / GearConfig::InputTeeth;
+    GearAngles clean = ShaftAngles(shaft + oneInputTooth);
+    GearAngles stale = clean;
+    stale.Gear3 = skewed.Gear3; /* the previous sample's reading */
+
+    position = decoder.Decode(stale);
+    CHECK(!position.IsValid);
+
+    /* The next clean sample is accepted at the advanced position. */
+    position = decoder.Decode(clean);
+    CHECK(position.IsValid);
+    CHECK(DecodedShaftCounts(position) == shaft + oneInputTooth);
+}
+
+/* Golden samples: raw MT6701 counts at known shaft positions, derived from
+ * the gear ratio only -- a driven wheel turns 13/teeth revolutions per
+ * input revolution -- and frozen here as literals.  The decoder cannot
+ * redefine what the hardware reports at these positions. */
+struct GoldenSample
+{
+    uint16_t Sun;
+    uint16_t Gear1;
+    uint16_t Gear2;
+    uint16_t Gear3;
+    uint16_t Turns;
+};
+
+static const GoldenSample _goldenSamples[] = {
+    {0u, 0u, 0u, 0u, 0u},                     /* zero position */
+    {0u, 5783u, 12935u, 15672u, 7u},          /* 7 turns, theta = 0 */
+    {631u, 6265u, 13366u, 16028u, 7u},        /* 7 turns + half a tooth */
+    {2000u, 7312u, 14303u, 418u, 7u},         /* 7 turns + 1.6 teeth */
+    {4096u, 8915u, 15737u, 1603u, 7u},        /* 7 turns + 1/4 turn */
+    {8192u, 12047u, 2156u, 3918u, 7u},        /* 7 turns + 1/2 turn, tooth edge */
+    {12000u, 14959u, 4761u, 6070u, 7u},       /* 7 turns + 9.5 teeth */
+    {15754u, 1446u, 7330u, 8192u, 7u},        /* 7 turns + 12.5 teeth */
+    {16383u, 1927u, 7760u, 8548u, 7u},        /* 7 turns + last count */
+    {8192u, 6264u, 5605u, 4630u, 0u},         /* 0 turns + 1/2 turn */
+    {1234u, 14436u, 14641u, 14944u, 4000u},   /* 4000 turns + 1234 */
+    {16383u, 16383u, 16383u, 16383u, 7428u},  /* last count of the range */
+    {3000u, 12896u, 7227u, 9531u, 1234u},     /* 1234 turns + 3000 */
+};
+
+static void TestGoldenSamples()
+{
+    std::printf("golden raw samples from the real gear ratio\n");
+    for (size_t sampleIndex = 0u;
+         sampleIndex < sizeof(_goldenSamples) / sizeof(_goldenSamples[0]);
+         sampleIndex++)
+    {
+        const GoldenSample& sample = _goldenSamples[sampleIndex];
+        GearAngles angles = {
+            sample.Sun, sample.Gear1, sample.Gear2, sample.Gear3};
+
+        /* Power-up: with no previous reading, this sample alone is the
+         * absolute position. */
+        GearDecoder decoder;
+        GearPosition position = decoder.Decode(angles);
+        CHECK(position.IsValid);
+        CHECK(position.Turns == sample.Turns);
+        CHECK(position.Angle == sample.Sun);
+        CHECK(DecodedShaftCounts(position) ==
+              static_cast<uint32_t>(sample.Turns) * 16384u + sample.Sun);
+    }
+
+    /* One driven tooth ahead of the same physical sample: the guard must
+     * reject it instead of accepting a misread position. */
+    GearAngles reference = {4096u, 8915u, 15737u, 1603u};
+    GearAngles misread = reference;
+    misread.Gear3 = 2137u; /* next tooth centre, 3 * 16384 / 23 */
+    GearDecoder decoder;
+    CHECK(decoder.Decode(reference).IsValid);
+    GearPosition position = decoder.Decode(misread);
+    CHECK(!position.IsValid);
+
+    /* A whole-turn-stale gear reading taken from the same turn: rejected
+     * too, and tracking stays on the last accepted position. */
+    misread = reference;
+    misread.Gear3 = 15672u; /* Gear3's reading at 7 turns exactly */
+    position = decoder.Decode(misread);
+    CHECK(!position.IsValid);
+    CHECK(decoder.Decode(reference).IsValid);
 }
 
 static void TestAngleEdges()
@@ -705,6 +961,12 @@ int main()
     TestExactDecode();
     TestMidTurnDecode();
     TestMidTurnTracking();
+    TestGoldenSamples();
+    TestPowerUpAnywhere();
+    TestAllWithinTurnAngles();
+    TestContinuousRotation();
+    TestSensorNoise();
+    TestReadSkew();
     TestAngleEdges();
     TestSlotQuantization();
     TestNoiseAndSmallSteps();
