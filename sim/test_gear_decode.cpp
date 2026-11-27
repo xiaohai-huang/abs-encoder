@@ -13,7 +13,8 @@
 #include <cstdio>
 
 #include "gear_decode.h"
-#include "mt6701.h" /* Mt6701::AngleMax */
+#include "gear_train_sim.h" /* GearTrainSim: the same plant as the chip sim */
+#include "mt6701.h"         /* Mt6701::AngleMax */
 
 static int _totalChecks = 0;
 static int _failedChecks = 0;
@@ -29,49 +30,37 @@ static int _failedChecks = 0;
         }                                                                    \
     } while (0)
 
-/* Raw angle of driven gear `gearTeeth` when the input shaft stands at
- * `inputCounts` counts (turns * 16384 + within-turn angle): the phase the
- * decoder inverts, evaluated at the input's resolution -- the same physical
- * model the simulated chips use. */
-static uint16_t ComputeGearAngle(uint32_t inputCounts, uint32_t gearTeeth)
+/* All four readings with the input shaft `shaftCounts` past zero (1/16384
+ * input revolution).  The plant is shared with the chip simulator: a driven
+ * wheel turns InputTeeth/teeth revolutions per input revolution, and each
+ * chip reports its own wheel's angle. */
+static GearAngles ShaftAngles(uint32_t shaftCounts)
 {
-    uint32_t wheelCounts =
-        (GearConfig::InputTeeth * inputCounts) % (gearTeeth * 16384u);
-    return static_cast<uint16_t>((wheelCounts + gearTeeth / 2u) / gearTeeth);
+    shaftCounts = GearTrainSim::WrapShaftPosition(shaftCounts);
+
+    GearAngles angles;
+    angles.Sun = GearTrainSim::SunAngle(shaftCounts);
+    angles.Gear1 =
+        GearTrainSim::WheelAngle(shaftCounts, GearConfig::DrivenTeethCounts[0]);
+    angles.Gear2 =
+        GearTrainSim::WheelAngle(shaftCounts, GearConfig::DrivenTeethCounts[1]);
+    angles.Gear3 =
+        GearTrainSim::WheelAngle(shaftCounts, GearConfig::DrivenTeethCounts[2]);
+    return angles;
 }
 
 /* Sample set at a continuous input position: `turns` whole turns plus
  * `sunAngle` of the next one.  The driven gears follow that same position,
- * as they do on the real gear train.  Fields are positional: Sun, Gear1,
- * Gear2, Gear3 (see the struct in gear_decode.h). */
+ * as they do on the real gear train. */
 static GearAngles CreateAnglesAt(uint32_t turns, uint16_t sunAngle)
 {
-    uint32_t inputCounts = turns * 16384u + sunAngle;
-    GearAngles angles;
-    angles.Sun = sunAngle;
-    angles.Gear1 =
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[0]);
-    angles.Gear2 =
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[1]);
-    angles.Gear3 =
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[2]);
-    return angles;
+    return ShaftAngles(turns * 16384u + sunAngle);
 }
 
 /* Sample set at a whole turn (Sun at 0). */
 static GearAngles CreateAnglesFor(uint32_t turns)
 {
     return CreateAnglesAt(turns, 0u);
-}
-
-/* All four readings with the input shaft `shaftCounts` past zero (1/16384
- * input revolution).  This is the plant, not the decoder: a driven wheel
- * turns InputTeeth/teeth revolutions per input revolution, and each chip
- * reports its own wheel's angle. */
-static GearAngles ShaftAngles(uint32_t shaftCounts)
-{
-    return CreateAnglesAt(shaftCounts / 16384u,
-                          static_cast<uint16_t>(shaftCounts % 16384u));
 }
 
 /* Decoded position as one continuous shaft count, turns * 16384 + angle. */
@@ -423,11 +412,13 @@ static void TestReadSkew()
     GearAngles skewed;
     skewed.Sun = static_cast<uint16_t>(shaft % 16384u);
     skewed.Gear1 =
-        ComputeGearAngle(shaft + skew, GearConfig::DrivenTeethCounts[0]);
+        GearTrainSim::WheelAngle(shaft + skew, GearConfig::DrivenTeethCounts[0]);
     skewed.Gear2 =
-        ComputeGearAngle(shaft + 2u * skew, GearConfig::DrivenTeethCounts[1]);
+        GearTrainSim::WheelAngle(shaft + 2u * skew,
+                                 GearConfig::DrivenTeethCounts[1]);
     skewed.Gear3 =
-        ComputeGearAngle(shaft + 3u * skew, GearConfig::DrivenTeethCounts[2]);
+        GearTrainSim::WheelAngle(shaft + 3u * skew,
+                                 GearConfig::DrivenTeethCounts[2]);
 
     GearDecoder decoder;
     GearPosition position = decoder.Decode(skewed);

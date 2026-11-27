@@ -18,19 +18,52 @@ SRCS_UNIT = test_gear_decode.cpp ../App/gear_decode.cpp
 
 BIN_UNIT = build/test-gear-decode
 
-$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h ../App/app_entry.h mt6701_slave_sim.h
+# Interactive console: same firmware logic and simulated hardware, driven
+# from stdin instead of a script.
+SRCS_SHELL = interactive_main.cpp hal_sim.cpp mt6701_slave_sim.cpp \
+             ../App/mt6701.cpp ../App/gear_decode.cpp ../App/i2c_pos.cpp \
+             ../App/app_entry.cpp
+
+BIN_SHELL = build/enc-shell
+
+# Web GUI: the same firmware logic behind a localhost HTTP server.
+SRCS_GUI = gui_main.cpp hal_sim.cpp mt6701_slave_sim.cpp \
+           ../App/mt6701.cpp ../App/gear_decode.cpp ../App/i2c_pos.cpp \
+           ../App/app_entry.cpp
+
+BIN_GUI = build/enc-gui
+
+ifeq ($(OS),Windows_NT)
+LDLIBS += -lws2_32
+endif
+
+$(BIN): $(SRCS) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h ../App/app_entry.h mt6701_slave_sim.h gear_train_sim.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(SRCS) -o $@
 
-$(BIN_UNIT): $(SRCS_UNIT) ../App/gear_decode.h ../App/gear_config.h ../App/mt6701.h
+$(BIN_UNIT): $(SRCS_UNIT) ../App/gear_decode.h ../App/gear_config.h ../App/mt6701.h gear_train_sim.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(SRCS_UNIT) -o $@
+
+$(BIN_SHELL): $(SRCS_SHELL) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h ../App/app_entry.h mt6701_slave_sim.h gear_train_sim.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(SRCS_SHELL) -o $@
+
+$(BIN_GUI): $(SRCS_GUI) ../App/hal.h ../App/mt6701.h ../App/gear_decode.h ../App/gear_config.h ../App/i2c_pos.h ../App/app_entry.h mt6701_slave_sim.h gear_train_sim.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(SRCS_GUI) -o $@ $(LDLIBS)
 
 run: $(BIN) $(BIN_UNIT)
 	./$(BIN)
 	./$(BIN_UNIT)
 
+interactive: $(BIN_SHELL)
+	./$(BIN_SHELL)
+
+gui: $(BIN_GUI)
+	./$(BIN_GUI)
+
 clean:
 	rm -rf build
 
-.PHONY: run clean
+.PHONY: run interactive gui clean

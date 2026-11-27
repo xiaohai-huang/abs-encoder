@@ -61,6 +61,12 @@ extern "C" int AppInit(void)
     return 1;
 }
 
+extern "C" void AppReset(void)
+{
+    _gearDecoder.Reset();
+    positionRegister.Init();
+}
+
 extern "C" void AppProcessSample(void)
 {
     PositionRegister::ReadResult results[PositionRegister::WheelCount];

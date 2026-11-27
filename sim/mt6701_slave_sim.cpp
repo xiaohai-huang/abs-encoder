@@ -10,6 +10,7 @@
 #include <cstddef> /* size_t: explicit, not every libstdc++ leaks it via
                       <cstdint> the way MinGW's does */
 
+#include "gear_train_sim.h"
 #include "mt6701.h"
 
 namespace
@@ -22,6 +23,7 @@ size_t RoleIndex(EncoderRole encoder)
 
 Mt6701SlaveSim::SimulatedChip
     Mt6701SlaveSim::_chips[Mt6701::EncoderCount];
+uint32_t Mt6701SlaveSim::_shaftCounts = 0u;
 
 void Mt6701SlaveSim::BuildFrame(SimulatedChip& chip)
 {
@@ -56,6 +58,38 @@ void Mt6701SlaveSim::Init()
         _chips[i].Frame = 0u;
         _chips[i].ByteIndex = -1;
     }
+    _shaftCounts = 0u;
+}
+
+void Mt6701SlaveSim::SetShaftPosition(uint32_t inputCounts)
+{
+    _shaftCounts = GearTrainSim::WrapShaftPosition(inputCounts);
+
+    _chips[RoleIndex(EncoderRole::Sun)].Angle =
+        GearTrainSim::SunAngle(_shaftCounts);
+    _chips[RoleIndex(EncoderRole::Gear1)].Angle = GearTrainSim::WheelAngle(
+        _shaftCounts, GearConfig::DrivenTeethCounts[0]);
+    _chips[RoleIndex(EncoderRole::Gear2)].Angle = GearTrainSim::WheelAngle(
+        _shaftCounts, GearConfig::DrivenTeethCounts[1]);
+    _chips[RoleIndex(EncoderRole::Gear3)].Angle = GearTrainSim::WheelAngle(
+        _shaftCounts, GearConfig::DrivenTeethCounts[2]);
+}
+
+void Mt6701SlaveSim::AdvanceShaft(int32_t delta)
+{
+    const int64_t range = static_cast<int64_t>(GearTrainSim::ShaftRange);
+    int64_t moved = static_cast<int64_t>(_shaftCounts) + delta;
+    moved %= range;
+    if (moved < 0)
+    {
+        moved += range;
+    }
+    SetShaftPosition(static_cast<uint32_t>(moved));
+}
+
+uint32_t Mt6701SlaveSim::ShaftPosition()
+{
+    return _shaftCounts;
 }
 
 void Mt6701SlaveSim::SelectChip(EncoderRole encoder, bool asserted)

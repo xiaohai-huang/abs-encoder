@@ -11,13 +11,16 @@ Firmware for a battery-free multi-turn absolute encoder on an STM32F103C8Tx (Cor
   - `gear_config.h` — compile-time mechanical config: `enum class EncoderRole` plus the `GearConfig` `constexpr` namespace (input + driven tooth counts, turn-field width, slew limit); changing gears = edit this header, rebuild, reflash
   - `gear_decode.h/.cpp` — absolute multi-turn decode (`class GearDecoder`): the constructor validates the geometry, per-sample CRT over the three gear residues, slew-guarded (jumps > `GearConfig::MaxTurnsDelta` rejected as misreads, last position held). No storage; the only state is the last accepted turn count
   - `i2c_pos.h/.cpp` — I2C slave host port (`class PositionRegister`, shared `positionRegister` instance): the decoded position as one combined 27-bit count (`turns·16384 + angle`), a one-byte status (bit0 = valid, bits 1..4 = per-encoder read health), a 16-bit sample counter, the constant full-scale count (`MaxPosition`, register 0x07, derived from `gear_config.h` so a host scales against this build's real range), each gear's own measured angle (register 0x0B, one uint16 per `EncoderRole` — the raw per-wheel readings, for bring-up) and a per-wheel read-diagnostics block (register 0x13, 8 bytes per `EncoderRole`: failure cause — magnetic vs no-valid-frame —, the raw MT6701 status, saturating per-cause failure counters, and the seq of that wheel's last failure); pure logic (no HAL). The snapshot is packed into one 32-bit word so an address-match read can never tear; wire protocol in `docs/i2c.md`
-  - `app_entry.h/.cpp` — the only C-compatible surface (`extern "C"` `AppInit` / `AppProcessSample`): owns the firmware's sample state and decoder instance, called from the CubeMX-generated C `main.c`
+  - `app_entry.h/.cpp` — the only C-compatible surface (`extern "C"` `AppInit` / `AppProcessSample` / `AppReset`): owns the firmware's sample state and decoder instance, called from the CubeMX-generated C `main.c` (`AppReset` re-arms the decoder and clears the map; the sim GUI uses it to re-sync after an arbitrary shaft jump)
   - `hal_stm32.cpp` — STM32 backend (`class Stm32Hal`): SPI1 + SPI2, role-keyed `_encoderWiring` wiring table binding each `EncoderRole` to its CSN pin and SPI bus, DWT µs clock, and the I2C1 slave transport (own address applied at runtime, EV/ER interrupts, listen-IT callbacks); the only firmware file that touches STM32 HAL
 - `sim/` — PC build of the same `App/` logic (test only, not in the firmware build):
   - `hal_sim.cpp` — PC backend (`class SimHal`, QPC clock, SPI bridged to the fake chips)
-  - `mt6701_slave_sim.h/.cpp` — simulated MT6701 speaking the real 24-bit SSI frame (`class Mt6701SlaveSim`), with fault/CRC injection controls
-  - `sim_main.cpp` — assert-based integration harness (SSI read path, I2C register map)
-  - `test_gear_decode.cpp` — standalone unit test of `GearDecoder` (links only `App/gear_decode.cpp`, no simulated hardware)
+  - `mt6701_slave_sim.h/.cpp` — simulated MT6701 speaking the real 24-bit SSI frame (`class Mt6701SlaveSim`), with fault/CRC injection controls; also models one input shaft and the gear train (`SetShaftPosition`/`AdvanceShaft`) so all four wheels move together
+  - `gear_train_sim.h` — header-only mechanical plant (one input-shaft position → the four wheel angles), shared by the chip simulator and the unit test
+  - `sim_main.cpp` — assert-based integration harness (shaft model → SSI read path → decode → I2C register map, including a moving shaft)
+  - `interactive_main.cpp` — stdin console (`make interactive`): place/move the modelled shaft, read chips, run `AppProcessSample`, dump the register map, inject faults
+  - `gui_main.cpp` — localhost web GUI (`make gui`, http://127.0.0.1:8080/): gear-train view, shaft slider/play, decoded position, chips, register diagnostics and fault injection over a tiny embedded HTTP server
+  - `test_gear_decode.cpp` — standalone unit test of `GearDecoder` (links only `App/gear_decode.cpp`, no simulated hardware); uses the same plant via `gear_train_sim.h`
   - `Makefile` (`make run`) — builds and runs both binaries
 - `Drivers/` — STM32F1xx HAL + CMSIS (vendor code, don't hand-edit)
 - `multi-turn-absolute-encoder.ioc` — STM32CubeMX project; source of truth for peripheral config
@@ -50,6 +53,8 @@ Toolchain settings (from `.eide/eide.yml`): C11 + C++11, `-fno-exceptions -fno-r
 ```
 cd sim && make run        # MinGW gcc; WinLibs installed via winget lives in
                           # %LOCALAPPDATA%\Microsoft\WinGet\Packages\...\mingw64\bin
+cd sim && make interactive  # console: move the shaft, read chips, run samples
+cd sim && make gui          # web GUI: http://127.0.0.1:8080/
 ```
 
 Exit code 0 = all checks pass. CRC-6 validation is always on.

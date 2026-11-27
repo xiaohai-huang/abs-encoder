@@ -179,44 +179,20 @@ static void TestCrc()
     Mt6701SlaveSim::SetCrcBroken(EncoderRole::Gear1, false);
 }
 
-/* Fine angle of driven gear `gearTeeth` when the input shaft stands at
- * `inputCounts` counts (turns * 16384 + angle): the phase relation the
- * decoder inverts, evaluated at the finest resolution the input reports --
- * what the simulated chips are set to so the train is physically real. */
-static uint16_t ComputeGearAngle(uint32_t inputCounts, uint32_t gearTeeth)
-{
-    uint32_t wheelCounts =
-        (GearConfig::InputTeeth * inputCounts) % (gearTeeth * 16384u);
-    return static_cast<uint16_t>((wheelCounts + gearTeeth / 2u) / gearTeeth);
-}
-
+/* The whole train at one shaft position: the Sun chip reports the angle, the
+ * driven chips report the phases that angle produces.  A fresh decoder per
+ * position keeps the slew guard from hiding a wrong decode. */
 static void TestGearDecodeReadPath()
 {
     std::printf("gear decode via the real SSI read path (roles Sun..Gear3)\n");
 
-    /* The whole train at 4000 turns plus several within-turn angles: the Sun
-       chip reports the angle, the driven chips report the phases that angle
-       produces.  A fresh decoder per position keeps the slew guard from
-       hiding a wrong decode. */
     const uint32_t turns = 4000u;
     const uint16_t sunAngles[] = {333u, 4096u, 8192u, 12000u, 16383u};
     for (size_t angleIndex = 0u;
          angleIndex < sizeof(sunAngles) / sizeof(sunAngles[0]); angleIndex++)
     {
-        const uint32_t inputCounts = turns * 16384u + sunAngles[angleIndex];
-        Mt6701SlaveSim::SetAngle(EncoderRole::Sun, sunAngles[angleIndex]);
-        Mt6701SlaveSim::SetAngle(
-            EncoderRole::Gear1,
-            ComputeGearAngle(inputCounts,
-                             GearConfig::DrivenTeethCounts[0]));
-        Mt6701SlaveSim::SetAngle(
-            EncoderRole::Gear2,
-            ComputeGearAngle(inputCounts,
-                             GearConfig::DrivenTeethCounts[1]));
-        Mt6701SlaveSim::SetAngle(
-            EncoderRole::Gear3,
-            ComputeGearAngle(inputCounts,
-                             GearConfig::DrivenTeethCounts[2]));
+        Mt6701SlaveSim::SetShaftPosition(turns * 16384u +
+                                         sunAngles[angleIndex]);
 
         GearAngles angles;
         Mt6701Sample sample;
@@ -237,6 +213,48 @@ static void TestGearDecodeReadPath()
         CHECK(position.IsValid);
         CHECK(position.Turns == turns);
         CHECK(position.Angle == sunAngles[angleIndex]);
+    }
+}
+
+/* The four chips are read one at a time.  On real hardware the shaft keeps
+ * turning between CS assertions, so one tuple spans several counts of
+ * motion: advance the modelled shaft between the reads and decode the
+ * result through the real SSI path. */
+static void TestMovingShaftReadPath()
+{
+    std::printf("moving shaft through the four sequential SSI reads\n");
+    const uint32_t starts[] = {5000u, 4000u * 16384u + 5000u,
+                               (GearConfig::TurnRange - 1u) * 16384u + 5000u};
+    const int32_t skew = 24; /* counts of shaft motion per chip read */
+
+    for (size_t startIndex = 0u;
+         startIndex < sizeof(starts) / sizeof(starts[0]); startIndex++)
+    {
+        const uint32_t start = starts[startIndex];
+        Mt6701SlaveSim::SetShaftPosition(start);
+
+        GearAngles angles;
+        Mt6701Sample sample;
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Sun, sample) == 0);
+        angles.Sun = sample.Angle;
+        Mt6701SlaveSim::AdvanceShaft(skew);
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear1, sample) == 0);
+        angles.Gear1 = sample.Angle;
+        Mt6701SlaveSim::AdvanceShaft(skew);
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear2, sample) == 0);
+        angles.Gear2 = sample.Angle;
+        Mt6701SlaveSim::AdvanceShaft(skew);
+        CHECK(Mt6701::ReadSample(hal, EncoderRole::Gear3, sample) == 0);
+        angles.Gear3 = sample.Angle;
+
+        GearDecoder decoder;
+        GearPosition position = decoder.Decode(angles);
+        std::printf("  shaft %u.%05u -> decoded %u turns (valid %d)\n",
+                    start / 16384u, start % 16384u, position.Turns,
+                    position.IsValid ? 1 : 0);
+        CHECK(position.IsValid);
+        CHECK(position.Turns == start / 16384u);
+        CHECK(position.Angle == start % 16384u);
     }
 }
 
@@ -469,16 +487,7 @@ static void TestAppSampleLoop()
 {
     std::printf("sample loop: health and freshness through AppProcessSample\n");
     const uint32_t inputCounts = 4000u * 16384u + 333u;
-    Mt6701SlaveSim::SetAngle(EncoderRole::Sun, 333u);
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear1,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[0]));
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear2,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[1]));
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear3,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[2]));
+    Mt6701SlaveSim::SetShaftPosition(inputCounts);
 
     positionRegister.Init();
     uint8_t bytes[PositionRegister::RegisterCount];
@@ -565,6 +574,55 @@ static void TestAppSampleLoop()
         DIAG(PositionRegister::CauseOk, 0u, 1u, 0u, expectedCounter - 1u),
         DIAG(PositionRegister::CauseOk, 0u, 1u, 0u, expectedCounter - 1u)};
     CHECK(std::memcmp(bytes, expectedRecovered, sizeof(bytes)) == 0);
+}
+
+/* The full firmware sample loop on a turning shaft: every published count
+ * is the modelled shaft position at that sample, forward and backward. */
+static void TestMovingShaftLoop()
+{
+    std::printf("sample loop publishes a moving shaft's position\n");
+    positionRegister.Init();
+    const uint32_t start = 4000u * 16384u + 1000u;
+    const uint32_t rate = 1000u; /* counts per 1 kHz sample */
+    uint32_t shaft = start;
+    uint8_t bytes[PositionRegister::RegisterCount];
+
+    for (uint32_t sampleIndex = 0u; sampleIndex < 250u; sampleIndex++)
+    {
+        Mt6701SlaveSim::SetShaftPosition(shaft);
+        AppProcessSample();
+
+        positionRegister.Select(0u);
+        positionRegister.Read(bytes);
+        const uint32_t count =
+            static_cast<uint32_t>(bytes[0]) |
+            (static_cast<uint32_t>(bytes[1]) << 8u) |
+            (static_cast<uint32_t>(bytes[2]) << 16u) |
+            (static_cast<uint32_t>(bytes[3]) << 24u);
+        CHECK(bytes[PositionRegister::RegisterStatus] ==
+              PositionRegister::StatusValid);
+        CHECK(count == shaft);
+        shaft += rate;
+    }
+
+    /* reverse: the same shaft runs back through the samples */
+    for (uint32_t sampleIndex = 0u; sampleIndex < 250u; sampleIndex++)
+    {
+        shaft -= rate;
+        Mt6701SlaveSim::SetShaftPosition(shaft);
+        AppProcessSample();
+
+        positionRegister.Select(0u);
+        positionRegister.Read(bytes);
+        const uint32_t count =
+            static_cast<uint32_t>(bytes[0]) |
+            (static_cast<uint32_t>(bytes[1]) << 8u) |
+            (static_cast<uint32_t>(bytes[2]) << 16u) |
+            (static_cast<uint32_t>(bytes[3]) << 24u);
+        CHECK(bytes[PositionRegister::RegisterStatus] ==
+              PositionRegister::StatusValid);
+        CHECK(count == shaft);
+    }
 }
 
 /* The diagnostics block (0x13..0x32) at the register level: one cause per
@@ -683,16 +741,7 @@ static void TestGearAngles()
 {
     std::printf("gear angles through AppProcessSample\n");
     const uint32_t inputCounts = 4000u * 16384u + 333u;
-    Mt6701SlaveSim::SetAngle(EncoderRole::Sun, 333u);
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear1,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[0]));
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear2,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[1]));
-    Mt6701SlaveSim::SetAngle(
-        EncoderRole::Gear3,
-        ComputeGearAngle(inputCounts, GearConfig::DrivenTeethCounts[2]));
+    Mt6701SlaveSim::SetShaftPosition(inputCounts);
 
     positionRegister.Init();
     uint8_t bytes[PositionRegister::RegisterCount];
@@ -748,8 +797,10 @@ int main()
     TestFaults();
     TestCrc();
     TestGearDecodeReadPath();
+    TestMovingShaftReadPath();
     TestI2cPosition();
     TestAppSampleLoop();
+    TestMovingShaftLoop();
     TestEncoderDiagnostics();
     TestGearAngles();
 

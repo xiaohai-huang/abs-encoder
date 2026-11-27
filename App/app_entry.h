@@ -29,6 +29,14 @@ int AppInit(void);
  */
 void AppProcessSample(void);
 
+/**
+ * Forget the decoder's tracking state and clear the register map, keeping
+ * the motor-shaft-independent configuration.  The next sample becomes the
+ * new absolute reference (used by the PC simulation to re-sync after an
+ * arbitrary shaft jump).
+ */
+void AppReset(void);
+
 #ifdef __cplusplus
 }
 #endif
